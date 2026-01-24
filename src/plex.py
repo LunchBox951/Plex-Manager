@@ -2,6 +2,7 @@ from plexapi.server import PlexServer
 import os
 import json
 import sys
+import time
 
 from media import Movie, TVShow
 
@@ -56,11 +57,48 @@ def get_plex_server():
     """Returns the connected Plex server instance."""
     return plex
 
+def safe_api_call(api_function, *args, max_retries=3, retry_delay=2, **kwargs):
+    """
+    Makes a safe API call with retries.
+    
+    Attempts to execute the provided function. If it fails, it reattempts login to plex and then retries.
+    """
+    global plex
+    
+    # Try to execute the API call
+    try:
+        return api_function(*args, **kwargs)
+    except Exception as e:
+        print(f"WARNING: Plex API call failed: {e}")
+        print(f"Attempting to reconnect and retry (max {max_retries} retries)...")
+        
+        # Retry with reconnection
+        for attempt in range(1, max_retries + 1):
+            try:
+                print(f"Reconnection attempt {attempt}/{max_retries}...")
+                plex = PlexServer(PLEX_URL, PLEX_TOKEN)
+                # Test the new connection
+                _ = plex.friendlyName
+                print("Successfully reconnected to Plex server!")
+                
+                # Retry the original API call
+                print("Retrying API call...")
+                return api_function(*args, **kwargs)
+            except Exception as retry_error:
+                if attempt < max_retries:
+                    print(f"Attempt {attempt} failed: {retry_error}")
+                    print(f"Waiting {retry_delay} seconds before next attempt...")
+                    time.sleep(retry_delay)
+                else:
+                    print(f"ERROR: All reconnection attempts failed!")
+                    print(f"Details: {retry_error}")
+                    sys.exit(2)
+
 def get_plex_libraries():
     """Returns a list of Plex libraries."""
-    return plex.library.sections()
+    return safe_api_call(lambda: plex.library.sections())
 
-def get_media_in_section(libraries) -> tuple[list[Movie], list[TVShow]]:
+def get_media_in_libraries(libraries) -> tuple[list[Movie], list[TVShow]]:
     """Returns all media items in the specified library."""
     movies = []
     tv_shows = []
