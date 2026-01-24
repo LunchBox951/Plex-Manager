@@ -1,5 +1,6 @@
 import os
 import shutil
+import time
 
 class Movie:
     def __init__(self, item):
@@ -66,3 +67,36 @@ class TVShow:
     def __init__(self, item):
         self.title = item.title
         self.seasons = [TVShow.Season(season) for season in item.seasons()]
+
+DAYS_TO_SECONDS = 86400  # Number of seconds in a day
+
+# Helper functions
+def get_movies_to_delete(movies: list[Movie], days_threshold: int) -> list[Movie]:
+    """Returns a list of movies that haven't been viewed in the specified number of days."""
+    to_delete = []
+    current_time = time.time()
+    threshold_seconds = days_threshold * DAYS_TO_SECONDS
+
+    for movie in movies:
+        if movie.last_viewed is not None:
+            last_viewed_time = movie.last_viewed.timestamp()
+            if (current_time - last_viewed_time) > threshold_seconds:
+                to_delete.append(movie)
+    
+    return to_delete
+
+def get_episodes_to_delete(tv_shows: list[TVShow], days_threshold: int) -> list[TVShow.Episode]:
+    """Returns a list of TV show episodes that haven't been viewed in the specified number of days."""
+    to_delete = []
+    current_time = time.time()
+    threshold_seconds = days_threshold * DAYS_TO_SECONDS
+
+    for show in tv_shows:
+        for season in show.seasons:
+            for episode in season.episodes:
+                if episode.last_viewed is not None:
+                    last_viewed_time = episode.last_viewed.timestamp()
+                    if (current_time - last_viewed_time) > threshold_seconds:
+                        to_delete.append(episode)
+    
+    return to_delete
