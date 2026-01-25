@@ -46,7 +46,7 @@ else:
 
 # Login to Plex server
 try:
-    plex = PlexServer(PLEX_URL, PLEX_TOKEN)
+    plex = PlexServer(PLEX_URL, PLEX_TOKEN, timeout=15)
 except Exception as e:
     print("ERROR: Could not connect to Plex server!")
     print(f"Details: {e}")
@@ -76,12 +76,8 @@ def safe_api_call(api_function, *args, max_retries=3, retry_delay=2, **kwargs):
         for attempt in range(1, max_retries + 1):
             try:
                 print(f"Reconnection attempt {attempt}/{max_retries}...")
-                plex = PlexServer(PLEX_URL, PLEX_TOKEN)
-                # Test the new connection
-                _ = plex.friendlyName
-                print("Successfully reconnected to Plex server!")
-                
-                # Retry the original API call
+                plex = PlexServer(PLEX_URL, PLEX_TOKEN, timeout=15)
+
                 print("Retrying API call...")
                 return api_function(*args, **kwargs)
             except Exception as retry_error:
@@ -113,4 +109,3 @@ def get_media_in_libraries(libraries) -> tuple[list[Movie], list[TVShow]]:
                 tv_shows.append(TVShow(item))
 
     return movies, tv_shows
-

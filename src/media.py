@@ -4,6 +4,7 @@ import time
 
 class Movie:
     def __init__(self, item):
+        self.plex_item = item
         self.title = item.title
         self.last_viewed = item.lastViewedAt if hasattr(item, 'lastViewedAt') else None
         self.file_path = item.media[0].parts[0].file if item.media[0].parts else None
@@ -68,7 +69,8 @@ class TVShow:
         self.title = item.title
         self.seasons = [TVShow.Season(season) for season in item.seasons()]
 
-DAYS_TO_SECONDS = 86400  # Number of seconds in a day
+DAYS_TO_SECONDS = 24 * 60 * 60
+# 24 hours x 60 minutes x 60 seconds
 
 # Helper functions
 def get_movies_to_delete(movies: list[Movie], days_threshold: int) -> list[Movie]:
