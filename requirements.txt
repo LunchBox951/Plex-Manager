@@ -4,3 +4,16 @@ requests         # HTTP client for TMDB API and qBittorrent API
 tmdbv3api        # TMDB API integration
 # qBittorrent API client (requests-based, no additional package needed)
 # Torrent search - custom implementation
+
+# Web Framework and Authentication
+fastapi                      # Modern web framework
+uvicorn[standard]           # ASGI server
+python-jose[cryptography]   # JWT token generation
+python-multipart            # Form data parsing
+python-dotenv               # Environment variable loading
+jinja2                      # Template engine for landing page
+slowapi                     # Rate limiting
+
+# Database
+sqlalchemy                  # ORM for user database
+cryptography                # Fernet encryption for Plex tokens
