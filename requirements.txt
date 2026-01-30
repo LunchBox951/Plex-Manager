@@ -1,0 +1,6 @@
+# Minimal Dependencies Only
+plexapi          # Plex server integration
+requests         # HTTP client for TMDB API and qBittorrent API
+tmdbv3api        # TMDB API integration
+# qBittorrent API client (requests-based, no additional package needed)
+# Torrent search - custom implementation
