@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Plex Manager - Welcome</title>
+    <link rel="stylesheet" href="/static/css/landing.css">
+</head>
+<body>
+    <div class="container">
+        <div class="hero">
+            <div class="logo">
+                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200" width="80" height="80">
+                    <circle cx="100" cy="100" r="90" fill="#E5A00D"/>
+                    <path d="M100 40 L160 100 L100 160 L40 100 Z" fill="#282A2D"/>
+                </svg>
+            </div>
+            
+            <h1>Welcome to Plex Manager</h1>
+            <p class="subtitle">Your unified media request and automation system</p>
+            
+            <div class="cta">
+                <button class="plex-login-btn" onclick="openPlexLogin()">
+                    <svg class="plex-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 30 30" width="24" height="24">
+                        <path fill="#E5A00D" d="M 15 3 C 8.373 3 3 8.373 3 15 C 3 21.627 8.373 27 15 27 C 21.627 27 27 21.627 27 15 C 27 8.373 21.627 3 15 3 z M 15 5 C 20.535 5 25 9.465 25 15 C 25 20.535 20.535 25 15 25 C 9.465 25 5 20.535 5 15 C 5 9.465 9.465 5 15 5 z M 12 10 L 12 20 L 18 15 L 12 10 z"/>
+                    </svg>
+                    Sign in with Plex
+                </button>
+                <p class="login-note">Sign in with your Plex account to get started</p>
+            </div>
+        </div>
+    </div>
+    
+    <script>
+        async function openPlexLogin() {
+            try {
+                // First, get the PIN from the backend
+                console.log('Getting Plex PIN...');
+                const pinResponse = await fetch('/api/auth/start');
+                if (!pinResponse.ok) {
+                    alert('Failed to start authentication. Please try again.');
+                    return;
+                }
+                
+                const pinData = await pinResponse.json();
+                const pinId = pinData.pin_id;
+                const authUrl = pinData.auth_url;
+                
+                console.log('Got PIN ID:', pinId);
+                
+                // Open popup to Plex auth URL
+                const width = 600;
+                const height = 700;
+                const left = (window.screen.width - width) / 2;
+                const top = (window.screen.height - height) / 2;
+                
+                const popup = window.open(
+                    authUrl,
+                    'Plex Login',
+                    `width=${width},height=${height},left=${left},top=${top},toolbar=no,location=no,status=no,menubar=no,resizable=yes`
+                );
+                
+                if (!popup || popup.closed || typeof popup.closed === 'undefined') {
+                    alert('Popup blocked! Please allow popups for this site and try again.');
+                    return;
+                }
+                
+                console.log('Starting to poll for PIN authorization:', pinId);
+                
+                // Poll the PIN status endpoint to check if user has authorized
+                const checkAuth = setInterval(async () => {
+                    try {
+                        console.log('Polling PIN status:', pinId);
+                        const response = await fetch(`/api/auth/poll/${pinId}`, { 
+                            credentials: 'include' 
+                        });
+                        
+                        if (!response.ok) {
+                            console.log('Poll response not OK, continuing to poll');
+                            return; // Keep polling
+                        }
+                        
+                        const data = await response.json();
+                        console.log('Poll response:', data);
+                        
+                        if (data.status === 'success') {
+                            // Successfully authenticated!
+                            console.log('Authentication successful!');
+                            clearInterval(checkAuth);
+                            clearInterval(checkClosed);
+                            
+                            // Set cookie via callback
+                            const callbackResponse = await fetch(`/auth/callback?token=${data.token}`, {
+                                credentials: 'include'
+                            });
+                            
+                            if (!callbackResponse.ok) {
+                                alert('Failed to set session cookie');
+                                return;
+                            }
+                            
+                            // Close popup if still open
+                            if (popup && !popup.closed) {
+                                popup.close();
+                            }
+                            
+                            // Small delay to ensure cookie is set, then redirect to dashboard
+                            setTimeout(() => {
+                                window.location.href = '/dashboard';
+                            }, 200);
+                        } else if (data.status === 'error') {
+                            clearInterval(checkAuth);
+                            clearInterval(checkClosed);
+                            alert('Authentication failed: ' + (data.message || 'Unknown error'));
+                            if (popup && !popup.closed) {
+                                popup.close();
+                            }
+                        }
+                        // If status is 'pending', keep polling
+                    } catch (error) {
+                        console.error('Poll error:', error);
+                        // Keep polling even on error
+                    }
+                }, 1000);
+                
+                // Also check when popup closes
+                const checkClosed = setInterval(() => {
+                    if (popup.closed) {
+                        clearInterval(checkClosed);
+                        clearInterval(checkAuth);
+                    }
+                }, 500);
+                
+                // Stop checking after 5 minutes
+                setTimeout(() => {
+                    clearInterval(checkAuth);
+                    clearInterval(checkClosed);
+                }, 5 * 60 * 1000);
+                
+            } catch (error) {
+                console.error('Error starting auth:', error);
+                alert('Failed to start authentication. Please try again.');
+            }
+        }
+    </script>
+</body>
+</html>

@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Plex Authentication</title>
+    <link rel="stylesheet" href="/static/css/landing.css">
+</head>
+<body>
+    <div class="auth-popup">
+        <div class="auth-content">
+            <div class="spinner"></div>
+            <h2>Redirecting to Plex...</h2>
+            <p>Please wait while we redirect you to Plex for authorization</p>
+        </div>
+    </div>
+    
+    <script>
+        const PIN_ID = "{{ pin_id }}";
+        const AUTH_URL = "{{ auth_url }}";
+        
+        // Store PIN ID in sessionStorage so parent can access it
+        try {
+            sessionStorage.setItem('plex_pin_id', PIN_ID);
+            // Also try to set it on opener
+            if (window.opener && !window.opener.closed) {
+                window.opener.currentPinId = PIN_ID;
+                console.log('Set PIN ID on opener:', PIN_ID);
+            }
+        } catch (e) {
+            console.error('Error setting PIN ID:', e);
+        }
+        
+        // Delay redirect slightly to ensure parent window can read the PIN ID
+        setTimeout(() => {
+            window.location.href = AUTH_URL;
+        }, 100);
+    </script>
+</body>
+</html>

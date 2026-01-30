@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dashboard - Plex Manager</title>
+    <link rel="stylesheet" href="/static/css/landing.css">
+</head>
+<body>
+    <div class="dashboard">
+        <header class="dashboard-header">
+            <div class="header-content">
+                <h1>Plex Manager</h1>
+                <div class="user-info">
+                    <img src="{{ user.avatar_url or '/static/img/default-avatar.png' }}" alt="Avatar" class="user-avatar">
+                    <span class="username">{{ user.username }}</span>
+                    {% if user.is_admin %}
+                    <span class="admin-badge">Admin</span>
+                    {% endif %}
+                    <button onclick="logout()" class="logout-btn">Logout</button>
+                </div>
+            </div>
+        </header>
+        
+        <main class="dashboard-main">
+            <div class="welcome-section">
+                <h2>Welcome, {{ user.username }}! 👋</h2>
+                <p>Your Plex Manager dashboard is coming soon.</p>
+                
+                <div class="info-card">
+                    <h3>Account Information</h3>
+                    <ul>
+                        <li><strong>Username:</strong> {{ user.username }}</li>
+                        <li><strong>Email:</strong> {{ user.email or 'Not provided' }}</li>
+                        <li><strong>Permissions:</strong> 
+                            {% if user.is_admin %}
+                                Administrator
+                            {% else %}
+                                Media Requests
+                            {% endif %}
+                        </li>
+                        <li><strong>Member since:</strong> {{ user.created_at.strftime('%B %d, %Y') if user.created_at else 'Unknown' }}</li>
+                    </ul>
+                </div>
+                
+                <div class="info-card">
+                    <h3>🚧 Under Construction</h3>
+                    <p>The React-based dashboard with media search, request management, and admin features is currently in development.</p>
+                    <p>Stay tuned for updates!</p>
+                </div>
+            </div>
+        </main>
+    </div>
+    
+    <script>
+        async function logout() {
+            try {
+                const response = await fetch('/api/auth/logout', {
+                    method: 'POST',
+                    credentials: 'include'
+                });
+                
+                if (response.ok) {
+                    window.location.href = '/';
+                }
+            } catch (error) {
+                console.error('Logout error:', error);
+                alert('Failed to logout');
+            }
+        }
+    </script>
+</body>
+</html>

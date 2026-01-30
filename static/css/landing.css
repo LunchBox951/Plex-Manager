@@ -1,0 +1,332 @@
+/* Plex Manager Landing Page Styles */
+
+:root {
+    --plex-gold: #E5A00D;
+    --plex-dark: #282A2D;
+    --plex-darker: #1A1B1D;
+    --plex-light: #CCCCCC;
+    --plex-white: #FFFFFF;
+    --error-red: #E74C3C;
+    --success-green: #2ECC71;
+}
+
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+    background: linear-gradient(135deg, var(--plex-darker) 0%, var(--plex-dark) 100%);
+    color: var(--plex-white);
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+/* Landing Page */
+
+.container {
+    max-width: 1200px;
+    margin: 0 auto;
+    padding: 2rem;
+}
+
+.hero {
+    text-align: center;
+    padding: 3rem 0;
+}
+
+.logo {
+    margin-bottom: 2rem;
+}
+
+h1 {
+    font-size: 3rem;
+    margin-bottom: 1rem;
+    color: var(--plex-white);
+}
+
+.subtitle {
+    font-size: 1.25rem;
+    color: var(--plex-light);
+    margin-bottom: 3rem;
+}
+
+.features {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+    gap: 2rem;
+    margin: 3rem 0;
+}
+
+.feature {
+    background: rgba(255, 255, 255, 0.05);
+    padding: 2rem;
+    border-radius: 12px;
+    border: 1px solid rgba(229, 160, 13, 0.2);
+    transition: transform 0.3s ease, border-color 0.3s ease;
+}
+
+.feature:hover {
+    transform: translateY(-5px);
+    border-color: var(--plex-gold);
+}
+
+.feature-icon {
+    font-size: 3rem;
+    margin-bottom: 1rem;
+}
+
+.feature h3 {
+    font-size: 1.5rem;
+    margin-bottom: 0.5rem;
+    color: var(--plex-gold);
+}
+
+.feature p {
+    color: var(--plex-light);
+}
+
+.cta {
+    margin-top: 3rem;
+}
+
+.plex-login-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.75rem;
+    background: var(--plex-gold);
+    color: var(--plex-darker);
+    font-size: 1.125rem;
+    font-weight: 600;
+    padding: 1rem 2rem;
+    border: none;
+    border-radius: 8px;
+    cursor: pointer;
+    transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+
+.plex-login-btn:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 8px 16px rgba(229, 160, 13, 0.3);
+}
+
+.plex-login-btn:active {
+    transform: translateY(0);
+}
+
+.plex-login-btn:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+}
+
+.plex-icon {
+    width: 24px;
+    height: 24px;
+}
+
+.login-note {
+    margin-top: 1rem;
+    color: var(--plex-light);
+    font-size: 0.875rem;
+}
+
+/* Auth Popup */
+
+.auth-popup {
+    width: 100vw;
+    height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 2rem;
+}
+
+.auth-content {
+    text-align: center;
+    max-width: 400px;
+}
+
+.spinner {
+    width: 50px;
+    height: 50px;
+    margin: 0 auto 2rem;
+    border: 4px solid rgba(229, 160, 13, 0.2);
+    border-top-color: var(--plex-gold);
+    border-radius: 50%;
+    animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+    to { transform: rotate(360deg); }
+}
+
+#status-message {
+    font-size: 1.5rem;
+    margin-bottom: 1rem;
+}
+
+#status-detail {
+    color: var(--plex-light);
+    margin-bottom: 2rem;
+}
+
+.error-box {
+    background: rgba(231, 76, 60, 0.1);
+    border: 1px solid var(--error-red);
+    color: var(--error-red);
+    padding: 1rem;
+    border-radius: 8px;
+    margin-top: 2rem;
+}
+
+/* Dashboard */
+
+.dashboard {
+    width: 100%;
+    min-height: 100vh;
+    background: var(--plex-darker);
+}
+
+.dashboard-header {
+    background: var(--plex-dark);
+    padding: 1.5rem 2rem;
+    border-bottom: 2px solid var(--plex-gold);
+}
+
+.header-content {
+    max-width: 1200px;
+    margin: 0 auto;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.user-info {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+}
+
+.user-avatar {
+    width: 40px;
+    height: 40px;
+    border-radius: 50%;
+    border: 2px solid var(--plex-gold);
+}
+
+.username {
+    font-weight: 600;
+}
+
+.admin-badge {
+    background: var(--plex-gold);
+    color: var(--plex-darker);
+    padding: 0.25rem 0.75rem;
+    border-radius: 12px;
+    font-size: 0.75rem;
+    font-weight: 700;
+    text-transform: uppercase;
+}
+
+.logout-btn {
+    background: rgba(255, 255, 255, 0.1);
+    color: var(--plex-white);
+    border: 1px solid rgba(255, 255, 255, 0.2);
+    padding: 0.5rem 1rem;
+    border-radius: 6px;
+    cursor: pointer;
+    transition: background 0.2s ease;
+}
+
+.logout-btn:hover {
+    background: rgba(255, 255, 255, 0.2);
+}
+
+.dashboard-main {
+    max-width: 1200px;
+    margin: 0 auto;
+    padding: 3rem 2rem;
+}
+
+.welcome-section h2 {
+    font-size: 2.5rem;
+    margin-bottom: 1rem;
+}
+
+.welcome-section > p {
+    color: var(--plex-light);
+    margin-bottom: 2rem;
+}
+
+.info-card {
+    background: rgba(255, 255, 255, 0.05);
+    border: 1px solid rgba(229, 160, 13, 0.2);
+    padding: 2rem;
+    border-radius: 12px;
+    margin-bottom: 2rem;
+}
+
+.info-card h3 {
+    color: var(--plex-gold);
+    margin-bottom: 1rem;
+    font-size: 1.5rem;
+}
+
+.info-card ul {
+    list-style: none;
+}
+
+.info-card li {
+    padding: 0.5rem 0;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.info-card li:last-child {
+    border-bottom: none;
+}
+
+.info-card p {
+    color: var(--plex-light);
+    line-height: 1.6;
+    margin-bottom: 0.5rem;
+}
+
+.info-card p:last-child {
+    margin-bottom: 0;
+}
+
+.plex-manual-link {
+    color: var(--plex-gold);
+    text-decoration: underline;
+    font-weight: 600;
+}
+
+.plex-manual-link:hover {
+    color: var(--plex-white);
+}
+
+/* Responsive */
+
+@media (max-width: 768px) {
+    h1 {
+        font-size: 2rem;
+    }
+    
+    .features {
+        grid-template-columns: 1fr;
+    }
+    
+    .header-content {
+        flex-direction: column;
+        gap: 1rem;
+    }
+    
+    .user-info {
+        flex-wrap: wrap;
+        justify-content: center;
+    }
+}
