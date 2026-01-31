@@ -4,6 +4,7 @@ Handles routing, middleware, and application lifecycle.
 """
 
 import os
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
@@ -15,12 +16,86 @@ from slowapi.errors import RateLimitExceeded
 
 from src.database import init_db
 from src.auth import router as auth_router, get_current_user
+from src.downloads import router as downloads_router
+from src.download_monitor import start_monitor, stop_monitor
 
-# Initialize FastAPI app
+
+# Validate required environment variables
+def validate_environment():
+    """Validate that all required environment variables are set."""
+    required_vars = [
+        'PLEX_URL',
+        'ENCRYPTION_KEY',
+        'JWT_SECRET_KEY',
+        'DOWNLOADS_PATH',
+        'MOVIES_PATH',
+        'TV_PATH',
+        'QBITTORRENT_URL',
+        'QBITTORRENT_USERNAME',
+        'QBITTORRENT_PASSWORD'
+    ]
+    
+    missing = []
+    for var in required_vars:
+        if not os.getenv(var):
+            missing.append(var)
+    
+    if missing:
+        raise ValueError(f"Missing required environment variables: {', '.join(missing)}")
+    
+    # Verify paths exist
+    paths_to_check = {
+        'DOWNLOADS_PATH': os.getenv('DOWNLOADS_PATH'),
+        'MOVIES_PATH': os.getenv('MOVIES_PATH'),
+        'TV_PATH': os.getenv('TV_PATH')
+    }
+    
+    missing_paths = []
+    for name, path in paths_to_check.items():
+        if path and not os.path.exists(path):
+            missing_paths.append(f"{name}: {path}")
+    
+    if missing_paths:
+        raise ValueError(f"Required paths do not exist:\n" + "\n".join(missing_paths))
+    
+    print("✓ All environment variables validated")
+    print(f"✓ Downloads path: {os.getenv('DOWNLOADS_PATH')}")
+    print(f"✓ Movies path: {os.getenv('MOVIES_PATH')}")
+    print(f"✓ TV path: {os.getenv('TV_PATH')}")
+
+
+# Application lifespan context manager
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Manage application startup and shutdown."""
+    # Startup
+    print("Starting Plex Manager API...")
+    
+    # Validate environment
+    validate_environment()
+    
+    # Initialize database
+    init_db()
+    
+    # Start download monitor
+    start_monitor()
+    
+    print("API ready!")
+    
+    yield
+    
+    # Shutdown
+    print("Shutting down Plex Manager API...")
+    stop_monitor()
+    print("Shutdown complete")
+
+
+# Initialize FastAPI app with lifespan
 app = FastAPI(
     title="Plex Manager",
     description="Unified media request and automation system",
-    version="0.1.0"
+    version="0.1.0",
+    lifespan=lifespan
 )
 
 # Initialize rate limiter
@@ -52,16 +127,9 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 # Setup Jinja2 templates
 templates = Jinja2Templates(directory="templates")
 
-# Include auth router
+# Include routers
 app.include_router(auth_router)
-
-# Startup event - Initialize database
-@app.on_event("startup")
-async def startup_event():
-    """Initialize database on application startup."""
-    print("Starting Plex Manager API...")
-    init_db()
-    print("API ready!")
+app.include_router(downloads_router, prefix="/api", tags=["downloads"])
 
 
 # Root route - Landing page

@@ -17,3 +17,7 @@ slowapi                     # Rate limiting
 # Database
 sqlalchemy                  # ORM for user database
 cryptography                # Fernet encryption for Plex tokens
+
+# Download Management
+apscheduler                 # Background task scheduling for download monitoring
+guessit                     # Fallback episode name parsing from filenames
