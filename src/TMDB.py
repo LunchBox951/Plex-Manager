@@ -24,18 +24,12 @@ import requests
 # Configuration
 # ============================================================================
 
-# Load TMDB API key from environment or config file
-config_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'data', 'plex.config')
+# Load TMDB API key from environment variable
 TMDB_API_KEY = os.environ.get('TMDB_API_KEY', '')
 
-if not TMDB_API_KEY and os.path.exists(config_path):
-    with open(config_path, 'r') as f:
-        config = json.load(f)
-        TMDB_API_KEY = config.get('tmdb_api_key', '')
-
-if not TMDB_API_KEY or TMDB_API_KEY == 'YOUR_TMDB_API_KEY':
+if not TMDB_API_KEY:
     print("ERROR: TMDB API key not configured!")
-    print(f"Please set TMDB_API_KEY environment variable or add to: {config_path}")
+    print("Please set TMDB_API_KEY in your .env file")
     print("Get your API key from: https://www.themoviedb.org/settings/api")
     sys.exit(1)
 

@@ -4,9 +4,12 @@
 # Database
 *.db
 *.db-journal
+data/*.db
+data/*.db-journal
 
-# Plex credentials
-data/plex.config
+# Cache
+cache/*
+!cache/.gitkeep
 
 # Python
 __pycache__/
