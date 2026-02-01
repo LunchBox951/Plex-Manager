@@ -14,9 +14,11 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from src.database import get_db
-from src.models import Download, SeasonRequest
+from src.models import Download, SeasonRequest, MediaRequest, EpisodeRetention, User
 from src.qbittorrent import get_qbittorrent_client, QBittorrentClient
 from src.torrent_validator import validate_torrent_files
+from src.auth import get_current_user
+from src.retention import get_effective_retention
 
 logger = logging.getLogger(__name__)
 
@@ -560,6 +562,508 @@ async def request_media(
     except Exception as e:
         logger.error(f"Media request failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============================================================================
+# Unified Media Request System
+# ============================================================================
+
+class UnifiedMediaRequestModel(BaseModel):
+    """Unified request model supporting all request types."""
+    tmdb_id: int
+    media_type: str  # 'movie' or 'tv'
+    
+    # TV-specific fields
+    seasons: Optional[List[int]] = None  # None = entire show, [1,2] = specific seasons
+    episodes: Optional[dict] = None  # {season: [episodes]}, None = full seasons
+    
+    # Retention policy
+    retention_type: str = "watch_once"  # forever, watch_once, watch_as_released
+    episode_retention_overrides: Optional[List[dict]] = None  # [{season, episode, retention_type}]
+
+
+class UnifiedMediaRequestResponse(BaseModel):
+    """Comprehensive response for unified requests."""
+    status: str  # success, already_exists, partial, not_found, error
+    message: str
+    media_request_id: Optional[int] = None
+    download_ids: Optional[List[int]] = None
+    torrents: Optional[List[dict]] = None
+    plex_info: Optional[dict] = None
+    missing_content: Optional[dict] = None  # For partial matches
+
+
+@router.post("/media/request-unified", response_model=UnifiedMediaRequestResponse)
+async def request_media_unified(
+    request: UnifiedMediaRequestModel,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Unified media request endpoint handling the complete workflow.
+    
+    Supports:
+    - Movies: Simple request with retention policy
+    - TV Episodes: Single or multiple episodes from a season
+    - TV Seasons: Single or multiple complete seasons
+    - TV Shows: Entire show with all seasons
+    
+    Workflow:
+    1. Validate request and retention policy
+    2. Fetch TMDB metadata
+    3. Check Plex for duplicates (dedupe detection)
+    4. Check for existing requests from other users
+    5. Create MediaRequest record with retention policy
+    6. For each season/download needed:
+       a. Search Prowlarr for torrents
+       b. Score and select best torrent
+       c. Add to qBittorrent
+       d. Create Download record linked to MediaRequest
+    7. Create EpisodeRetention overrides
+    8. Trigger background monitoring
+    9. [PLACEHOLDER] Send notification
+    
+    Returns:
+        Comprehensive response with all created records
+    """
+    from src.plex import check_media_exists
+    from src.TMDB import get_movie_details, get_tv_details
+    from src.prowlarr import get_prowlarr_client, CATEGORY_MOVIES, CATEGORY_TV
+    from src.scoring import rank_torrents, select_best_torrent
+    
+    logger.info(f"[UNIFIED REQUEST] User {current_user.username} - TMDB {request.tmdb_id} ({request.media_type})")
+    
+    try:
+        # ====================================================================
+        # Step 1: Validate Request
+        # ====================================================================
+        
+        valid_retention = ['forever', 'watch_once', 'watch_as_released']
+        if request.retention_type not in valid_retention:
+            raise HTTPException(status_code=400, detail=f"Invalid retention_type. Must be one of: {valid_retention}")
+        
+        if request.retention_type == 'watch_as_released' and request.media_type != 'tv':
+            raise HTTPException(status_code=400, detail="watch_as_released is only valid for TV shows")
+        
+        if request.media_type not in ['movie', 'tv']:
+            raise HTTPException(status_code=400, detail="media_type must be 'movie' or 'tv'")
+        
+        if request.media_type == 'tv' and request.seasons is not None and len(request.seasons) == 0:
+            raise HTTPException(status_code=400, detail="seasons list cannot be empty")
+        
+        # ====================================================================
+        # Step 2: Fetch TMDB Metadata
+        # ====================================================================
+        
+        logger.info("[Step 1/9] Fetching TMDB metadata...")
+        if request.media_type == 'movie':
+            tmdb_data = get_movie_details(request.tmdb_id)
+            title = tmdb_data.get('title')
+            year = tmdb_data.get('year')
+        else:
+            tmdb_data = get_tv_details(request.tmdb_id)
+            title = tmdb_data.get('name')
+            year = tmdb_data.get('year')
+            seasons_data = tmdb_data.get('seasons', [])
+        
+        if not title:
+            raise HTTPException(status_code=404, detail="Media not found on TMDB")
+        
+        logger.info(f"Found: {title} ({year})")
+        
+        # ====================================================================
+        # Step 3: Check Plex for Duplicates
+        # ====================================================================
+        
+        logger.info("[Step 2/9] Checking Plex for duplicates...")
+        
+        if request.media_type == 'movie':
+            plex_check = check_media_exists(
+                tmdb_title=title,
+                year=year,
+                media_type='movie'
+            )
+            
+            if plex_check.get('exists'):
+                logger.info("Movie already exists in Plex")
+                return UnifiedMediaRequestResponse(
+                    status="already_exists",
+                    message=f"{title} ({year}) already available in Plex",
+                    plex_info=plex_check
+                )
+        else:
+            # For TV shows, check what we need vs what exists
+            seasons_to_request = []
+            episodes_to_request = {}
+            
+            if request.seasons is None:
+                # Request entire show - get all seasons from TMDB
+                seasons_to_request = [s['season_number'] for s in seasons_data if s['season_number'] > 0]
+            else:
+                seasons_to_request = request.seasons
+            
+            # Build episodes map
+            for season_num in seasons_to_request:
+                if request.episodes and str(season_num) in request.episodes:
+                    # Specific episodes requested
+                    episodes_to_request[season_num] = request.episodes[str(season_num)]
+                else:
+                    # Full season requested
+                    episodes_to_request[season_num] = None
+            
+            # Check each season against Plex
+            all_exist = True
+            missing_seasons = {}
+            
+            for season_num, requested_eps in episodes_to_request.items():
+                plex_check = check_media_exists(
+                    tmdb_title=title,
+                    year=year,
+                    media_type='tv',
+                    season=season_num,
+                    episodes=requested_eps
+                )
+                
+                if not plex_check.get('exists'):
+                    all_exist = False
+                    missing_seasons[season_num] = requested_eps
+                elif plex_check.get('partial') and plex_check.get('missing_episodes'):
+                    all_exist = False
+                    missing_seasons[season_num] = plex_check['missing_episodes']
+            
+            if all_exist:
+                logger.info("All requested content already exists in Plex")
+                return UnifiedMediaRequestResponse(
+                    status="already_exists",
+                    message=f"{title} - all requested content already available in Plex"
+                )
+            
+            if missing_seasons:
+                logger.info(f"Partial match - will download missing: {missing_seasons}")
+                episodes_to_request = missing_seasons
+            else:
+                logger.info("No existing content found in Plex, proceeding with full request")
+        
+        # ====================================================================
+        # Step 4: Check for Existing Requests
+        # ====================================================================
+        
+        logger.info("[Step 3/9] Checking for existing requests...")
+        existing_requests = db.query(MediaRequest).filter(
+            MediaRequest.tmdb_id == request.tmdb_id,
+            MediaRequest.media_type == request.media_type,
+            MediaRequest.status != 'deleted'
+        ).all()
+        
+        if existing_requests:
+            effective_retention, protected = get_effective_retention(
+                db, request.tmdb_id, request.media_type
+            )
+            logger.info(f"Found {len(existing_requests)} existing request(s) - Effective retention: {effective_retention}")
+        
+        # ====================================================================
+        # Step 5: Create MediaRequest Record
+        # ====================================================================
+        
+        logger.info("[Step 4/9] Creating MediaRequest record...")
+        media_request = MediaRequest(
+            user_id=current_user.id,
+            tmdb_id=request.tmdb_id,
+            media_type=request.media_type,
+            title=title,
+            year=year,
+            retention_type=request.retention_type,
+            status='downloading',
+            requested_at=datetime.utcnow()
+        )
+        
+        db.add(media_request)
+        db.flush()
+        logger.info(f"Created MediaRequest ID: {media_request.id}")
+        
+        # ====================================================================
+        # Step 6: Create Episode Retention Overrides
+        # ====================================================================
+        
+        if request.media_type == 'tv' and request.episode_retention_overrides:
+            logger.info("[Step 5/9] Creating episode retention overrides...")
+            for override in request.episode_retention_overrides:
+                episode_retention = EpisodeRetention(
+                    media_request_id=media_request.id,
+                    season_number=override['season'],
+                    episode_number=override['episode'],
+                    retention_type=override['retention_type']
+                )
+                db.add(episode_retention)
+            logger.info(f"Created {len(request.episode_retention_overrides)} episode overrides")
+        
+        # ====================================================================
+        # Step 7: Download Torrents
+        # ====================================================================
+        
+        logger.info("[Step 6/9] Searching and downloading torrents...")
+        download_ids = []
+        torrent_details = []
+        
+        qb = get_qbittorrent_client()
+        prowlarr = get_prowlarr_client()
+        
+        failed_downloads = db.query(Download).filter(
+            Download.status.in_(['failed', 'partial_failed'])
+        ).all()
+        failed_hashes = {d.torrent_hash.lower() for d in failed_downloads}
+        
+        if request.media_type == 'movie':
+            success, download_id, torrent_info, error = await _download_torrent(
+                prowlarr=prowlarr,
+                qb=qb,
+                db=db,
+                media_type='movie',
+                title=title,
+                year=year,
+                tmdb_id=request.tmdb_id,
+                media_request_id=media_request.id,
+                failed_hashes=failed_hashes,
+                season=None,
+                episodes=None
+            )
+            
+            if not success:
+                media_request.status = 'failed'
+                db.commit()
+                
+                logger.error(f"[NOTIFICATION PLACEHOLDER] Notify user {current_user.username}: Request failed - {error}")
+                
+                raise HTTPException(status_code=422, detail=error)
+            
+            download_ids.append(download_id)
+            torrent_details.append(torrent_info)
+        
+        else:
+            for season_num, requested_eps in episodes_to_request.items():
+                logger.info(f"Downloading Season {season_num} (episodes: {requested_eps or 'all'})")
+                
+                success, download_id, torrent_info, error = await _download_torrent(
+                    prowlarr=prowlarr,
+                    qb=qb,
+                    db=db,
+                    media_type='tv',
+                    title=title,
+                    year=year,
+                    tmdb_id=request.tmdb_id,
+                    media_request_id=media_request.id,
+                    failed_hashes=failed_hashes,
+                    season=season_num,
+                    episodes=requested_eps
+                )
+                
+                if not success:
+                    logger.error(f"Failed to download Season {season_num}: {error}")
+                    media_request.status = 'partial'
+                    torrent_details.append({
+                        'season': season_num,
+                        'status': 'failed',
+                        'error': error
+                    })
+                else:
+                    download_ids.append(download_id)
+                    torrent_details.append(torrent_info)
+        
+        # ====================================================================
+        # Step 8: Commit Changes
+        # ====================================================================
+        
+        logger.info("[Step 7/9] Committing database changes...")
+        db.commit()
+        db.refresh(media_request)
+        
+        # ====================================================================
+        # Step 9: Notification Placeholder
+        # ====================================================================
+        
+        logger.info("[Step 8/9] [NOTIFICATION PLACEHOLDER] Sending notification...")
+        logger.info(f"[NOTIFICATION PLACEHOLDER] Notify user {current_user.username}: '{title}' download started with {len(download_ids)} torrent(s)")
+        
+        logger.info(f"[Step 9/9] Request completed - MediaRequest ID: {media_request.id}, Downloads: {download_ids}")
+        
+        return UnifiedMediaRequestResponse(
+            status="success",
+            message=f"{title} download{'s' if len(download_ids) > 1 else ''} started successfully",
+            media_request_id=media_request.id,
+            download_ids=download_ids,
+            torrents=torrent_details
+        )
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"[ERROR] Unified request failed: {e}", exc_info=True)
+        logger.error(f"[NOTIFICATION PLACEHOLDER] Notify user {current_user.username}: Request error - {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+async def _download_torrent(
+    prowlarr, qb, db, media_type: str, title: str, year: int,
+    tmdb_id: int, media_request_id: int, failed_hashes: set,
+    season: Optional[int], episodes: Optional[List[int]]
+) -> tuple:
+    """
+    Helper function to search, score, and download a single torrent.
+    
+    Returns:
+        (success: bool, download_id: int|None, torrent_info: dict|None, error: str|None)
+    """
+    from src.prowlarr import CATEGORY_MOVIES, CATEGORY_TV
+    from src.scoring import rank_torrents, select_best_torrent
+    
+    try:
+        if media_type == 'movie':
+            query = f"{title} {year}"
+            category = CATEGORY_MOVIES
+        else:
+            query = f"{title} S{season:02d}" if season else title
+            category = CATEGORY_TV
+        
+        torrents = prowlarr.search(query, category)
+        if not torrents:
+            return (False, None, None, f"No torrents found for {title}")
+        
+        logger.info(f"Found {len(torrents)} torrents from Prowlarr")
+        
+        scored_torrents = rank_torrents(
+            torrents=torrents,
+            failed_hashes=failed_hashes,
+            tmdb_id=tmdb_id if media_type == 'tv' else None,
+            season_number=season,
+            requested_episodes=episodes,
+            db_session=db,
+            qb_client=qb
+        )
+        
+        if not scored_torrents:
+            return (False, None, None, "No suitable torrents after filtering")
+        
+        best_torrent = select_best_torrent(scored_torrents)
+        if not best_torrent:
+            return (False, None, None, "No torrents meet minimum quality requirements")
+        
+        logger.info(f"Selected: {best_torrent.torrent.title} (score: {best_torrent.final_score:.2f})")
+        
+        max_attempts = min(3, len(scored_torrents))
+        for attempt in range(max_attempts):
+            if attempt > 0:
+                best_torrent = scored_torrents[attempt]
+                logger.info(f"Retry {attempt}: {best_torrent.torrent.title}")
+            
+            try:
+                info_hash = QBittorrentClient.extract_info_hash(best_torrent.torrent.magnet_link)
+                if not info_hash:
+                    continue
+                
+                existing = db.query(Download).filter(Download.torrent_hash == info_hash).first()
+                if existing:
+                    logger.info(f"Torrent already exists: Download ID {existing.id}")
+                    
+                    if not existing.media_request_id:
+                        existing.media_request_id = media_request_id
+                        db.flush()
+                    
+                    return (True, existing.id, {
+                        'title': best_torrent.torrent.title,
+                        'size_gb': best_torrent.torrent.size_gb,
+                        'seeders': best_torrent.torrent.seeders,
+                        'score': best_torrent.final_score,
+                        'indexer': best_torrent.torrent.indexer,
+                        'existing': True
+                    }, None)
+                
+                category = media_type
+                save_path = os.getenv('DOWNLOADS_PATH')
+                
+                success = qb.add_magnet(
+                    magnet_uri=best_torrent.torrent.magnet_link,
+                    category=category,
+                    save_path=save_path
+                )
+                
+                if not success:
+                    continue
+                
+                import time
+                time.sleep(2)
+                
+                torrent_info = qb.get_torrent_info(info_hash)
+                if not torrent_info:
+                    qb.delete_torrent(info_hash, delete_files=True)
+                    continue
+                
+                files = qb.get_torrent_files(info_hash)
+                if not files:
+                    qb.delete_torrent(info_hash, delete_files=True)
+                    continue
+                
+                validation = validate_torrent_files(files)
+                if not validation.valid:
+                    qb.delete_torrent(info_hash, delete_files=True)
+                    continue
+                
+                timeout_date = datetime.utcnow() + timedelta(days=15)
+                
+                download = Download(
+                    torrent_hash=info_hash,
+                    magnet_link=best_torrent.torrent.magnet_link,
+                    status='downloading',
+                    media_type=media_type,
+                    metadata_json=json.dumps({
+                        'name': torrent_info.get('name'),
+                        'size': torrent_info.get('size'),
+                        'num_files': len(files),
+                        'indexer': best_torrent.torrent.indexer,
+                        'score': best_torrent.final_score
+                    }),
+                    will_timeout_at=timeout_date,
+                    tmdb_id=tmdb_id,
+                    year=year,
+                    season=season,
+                    episodes=json.dumps(episodes) if episodes else None,
+                    media_request_id=media_request_id
+                )
+                
+                db.add(download)
+                db.flush()
+                
+                if media_type == 'tv' and season:
+                    season_req = SeasonRequest(
+                        download_id=download.id,
+                        season_number=season,
+                        episode_numbers=json.dumps(episodes) if episodes else None,
+                        status='pending'
+                    )
+                    db.add(season_req)
+                    db.flush()
+                
+                logger.info(f"Created Download ID: {download.id}")
+                
+                return (True, download.id, {
+                    'title': best_torrent.torrent.title,
+                    'size_gb': best_torrent.torrent.size_gb,
+                    'seeders': best_torrent.torrent.seeders,
+                    'score': best_torrent.final_score,
+                    'indexer': best_torrent.torrent.indexer,
+                    'resolution': best_torrent.resolution,
+                    'episode_count': best_torrent.episode_count,
+                    'season': season
+                }, None)
+            
+            except Exception as e:
+                logger.error(f"Attempt {attempt + 1} failed: {e}")
+                continue
+        
+        return (False, None, None, "All torrent attempts failed")
+    
+    except Exception as e:
+        logger.error(f"Download torrent error: {e}")
+        return (False, None, None, str(e))
 
 
 @router.post("/media/search", response_model=dict)

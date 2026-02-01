@@ -10,7 +10,7 @@ from sqlalchemy import and_, or_
 
 from src.models import MediaRequest, EpisodeRetention, Settings, Download
 from src.plex import get_plex_server
-from src.TMDB import get_tv_show_details, get_season_details
+from src.TMDB import get_tv_details, get_season_episode_count
 
 
 # Retention type hierarchy (most permissive to least permissive)
@@ -258,8 +258,11 @@ def schedule_episode_deletion(db: Session, media_request: MediaRequest,
     # Watch as released - check if next episode is available
     elif effective_retention == 'watch_as_released':
         try:
+            # TODO: Implement get_season_details in TMDB.py for episode air date checking
+            # For now, skip this check - requires TMDB season details API
+            return False
             # Check if next episode exists and has aired
-            season_info = get_season_details(media_request.tmdb_id, season)
+            # season_info = get_season_details(media_request.tmdb_id, season)
             
             # Check if there's a next episode in this season
             if episode < len(season_info.get('episodes', [])):
@@ -275,7 +278,7 @@ def schedule_episode_deletion(db: Session, media_request: MediaRequest,
                         return True
             else:
                 # Last episode of season - check if there's a next season
-                show_info = get_tv_show_details(media_request.tmdb_id)
+                show_info = get_tv_details(media_request.tmdb_id)
                 number_of_seasons = show_info.get('number_of_seasons', 0)
                 
                 if season >= number_of_seasons:

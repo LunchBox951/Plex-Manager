@@ -12,7 +12,7 @@ from typing import Dict, List, Optional
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from src.database import SessionLocal
-from src.models import Download
+from src.models import Download, MediaRequest
 from src.qbittorrent import get_qbittorrent_client
 from src.torrent_validator import (
     is_video_file, is_subtitle_file, parse_episode_info,
@@ -352,6 +352,40 @@ def on_download_complete(download: Download, db_session):
         download.status = "seeding"
         download.completed_at = datetime.utcnow()
     
+    # Update MediaRequest status
+    if download.media_request_id:
+        media_request = db_session.query(MediaRequest).filter(
+            MediaRequest.id == download.media_request_id
+        ).first()
+        
+        if media_request:
+            if download.status in ['seeding', 'completed']:
+                # Check if all downloads for this request are complete
+                all_downloads = db_session.query(Download).filter(
+                    Download.media_request_id == media_request.id
+                ).all()
+                
+                all_complete = all([
+                    d.status in ['seeding', 'completed'] 
+                    for d in all_downloads
+                ])
+                
+                if all_complete:
+                    media_request.status = 'available'
+                    media_request.completed_at = datetime.utcnow()
+                    
+                    # [PLACEHOLDER] Send completion notification
+                    print(f"[NOTIFICATION PLACEHOLDER] MediaRequest {media_request.id} ({media_request.title}) - Now available in Plex!")
+                    print(f"[NOTIFICATION PLACEHOLDER] Notify user_id {media_request.user_id}")
+                else:
+                    media_request.status = 'processing'
+            else:
+                # Failed
+                media_request.status = 'failed'
+                
+                # [PLACEHOLDER] Send failure notification
+                print(f"[NOTIFICATION PLACEHOLDER] MediaRequest {media_request.id} failed processing")
+    
     db_session.commit()
     print(f"Download processing complete: {download.status}")
 
@@ -432,6 +466,16 @@ def monitor_downloads():
                 # Update progress and seed ratio
                 download.progress = torrent_info.get('progress', 0) * 100
                 download.seed_ratio = torrent_info.get('ratio', 0)
+                
+                # Update MediaRequest status if linked
+                if download.media_request_id:
+                    media_request = db.query(MediaRequest).filter(
+                        MediaRequest.id == download.media_request_id
+                    ).first()
+                    
+                    if media_request and media_request.status == 'downloading':
+                        # Keep status as downloading with updated progress tracked in Download records
+                        pass
                 
                 qb_state = torrent_info.get('state', '')
                 
