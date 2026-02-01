@@ -504,6 +504,135 @@ def cleanup_old_downloads():
         db.close()
 
 
+def check_scheduled_deletions():
+    """
+    Check for scheduled media deletions based on retention policies.
+    Runs daily at 4 AM to process media marked for deletion.
+    """
+    from src.retention import (
+        get_effective_retention,
+        send_deletion_notification,
+        get_scheduled_deletions as get_scheduled,
+        track_watch_status,
+        track_episode_watch_status
+    )
+    from src.models import MediaRequest, EpisodeRetention
+    from src.media import Movie, TVShow
+    from src.plex import get_plex_server
+    from datetime import datetime
+    
+    print(f"[{datetime.utcnow()}] Running scheduled deletion check...")
+    db = get_database()
+    
+    try:
+        plex = get_plex_server()
+        deletion_count = 0
+        
+        # Get all media requests scheduled for deletion
+        media_requests = db.query(MediaRequest).filter(
+            MediaRequest.deletion_scheduled_at <= datetime.utcnow(),
+            MediaRequest.auto_delete_enabled == 1,
+            MediaRequest.status != 'deleted'
+        ).all()
+        
+        print(f"Found {len(media_requests)} media items scheduled for deletion")
+        
+        for request in media_requests:
+            try:
+                # Verify effective retention still allows deletion
+                effective_retention, protected = get_effective_retention(
+                    db, request.tmdb_id, request.media_type
+                )
+                
+                if protected or effective_retention == 'forever':
+                    print(f"Skipping {request.title} - protected by retention policy")
+                    request.deletion_scheduled_at = None
+                    db.commit()
+                    continue
+                
+                # Send notification placeholder
+                send_deletion_notification(request)
+                
+                # Update watch status one last time before deletion
+                track_watch_status(db, plex, request)
+                
+                # Delete media based on type
+                if request.media_type == 'movie':
+                    # Find movie in Plex
+                    library = plex.library.section('Movies')
+                    results = library.search(title=request.title, year=request.year)
+                    
+                    if results:
+                        movie = Movie(results[0])
+                        movie.delete()
+                        request.status = 'deleted'
+                        request.deleted_at = datetime.utcnow()
+                        deletion_count += 1
+                        print(f"Deleted movie: {request.title} (retention: {request.retention_type})")
+                
+                elif request.media_type == 'tv':
+                    # Handle TV show episode deletions
+                    episode_retentions = db.query(EpisodeRetention).filter(
+                        EpisodeRetention.media_request_id == request.id,
+                        EpisodeRetention.deletion_scheduled_at <= datetime.utcnow()
+                    ).all()
+                    
+                    library = plex.library.section('TV Shows')
+                    results = library.search(title=request.title)
+                    
+                    if results and episode_retentions:
+                        show = results[0]
+                        tv_show = TVShow(show)
+                        
+                        for ep_retention in episode_retentions:
+                            # Check episode-level effective retention
+                            ep_effective, ep_protected = get_effective_retention(
+                                db, request.tmdb_id, 'tv',
+                                ep_retention.season_number,
+                                ep_retention.episode_number
+                            )
+                            
+                            if ep_protected or ep_effective == 'forever':
+                                print(f"Skipping S{ep_retention.season_number}E{ep_retention.episode_number} - protected")
+                                ep_retention.deletion_scheduled_at = None
+                                continue
+                            
+                            # Find and delete episode
+                            for season in tv_show.seasons:
+                                if season.season_number == ep_retention.season_number:
+                                    for episode in season.episodes:
+                                        if episode.episode_number == ep_retention.episode_number:
+                                            episode.delete()
+                                            deletion_count += 1
+                                            print(f"Deleted {request.title} S{ep_retention.season_number}E{ep_retention.episode_number}")
+                                            break
+                        
+                        # Check if all episodes deleted, mark show as deleted
+                        remaining_episodes = db.query(EpisodeRetention).filter(
+                            EpisodeRetention.media_request_id == request.id,
+                            EpisodeRetention.deletion_scheduled_at.isnot(None)
+                        ).count()
+                        
+                        if remaining_episodes == 0:
+                            request.status = 'deleted'
+                            request.deleted_at = datetime.utcnow()
+                
+                db.commit()
+                
+            except Exception as e:
+                print(f"Error deleting {request.title}: {e}")
+                db.rollback()
+                continue
+        
+        print(f"Scheduled deletion check complete. Deleted {deletion_count} items.")
+        
+    except Exception as e:
+        print(f"Error in check_scheduled_deletions: {e}")
+        db.rollback()
+    finally:
+        db.close()
+
+
 def start_monitor():
     """Start the download monitoring scheduler."""
     scheduler = get_scheduler()
@@ -524,6 +653,16 @@ def start_monitor():
         hour=3,
         minute=0,
         id='cleanup_downloads',
+        replace_existing=True
+    )
+    
+    # Check scheduled deletions daily at 4 AM
+    scheduler.add_job(
+        check_scheduled_deletions,
+        'cron',
+        hour=4,
+        minute=0,
+        id='retention_deletions',
         replace_existing=True
     )
     

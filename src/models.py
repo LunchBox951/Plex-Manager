@@ -76,6 +76,10 @@ class Download(Base):
     processed_files_json = Column(Text, nullable=True)  # JSON array of successfully copied files
     failed_reason = Column(String, nullable=True)  # Reason for failure
     
+    # Retention system fields
+    retention_type = Column(String, nullable=True)  # forever, watch_once, watch_as_released
+    protected_from_deletion = Column(Integer, default=0)  # Boolean: 1 = protected, 0 = not protected
+    
     # Timestamps
     added_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     completed_at = Column(DateTime, nullable=True)  # When download finished
@@ -88,8 +92,8 @@ class Download(Base):
     season = Column(Integer, nullable=True)  # For TV shows
     episodes = Column(Text, nullable=True)  # JSON array of requested episode numbers
     
-    # Foreign key for future media request integration
-    media_request_id = Column(Integer, nullable=True)  # ForeignKey('media_requests.id') when implemented
+    # Foreign key for media request integration
+    media_request_id = Column(Integer, ForeignKey('media_requests.id'), nullable=True, index=True)
     
     def to_dict(self):
         """Convert download to dictionary for JSON serialization."""
@@ -167,3 +171,117 @@ class SeasonRequest(Base):
             "status": self.status,
             "created_at": self.created_at.isoformat() if self.created_at else None
         }
+
+
+class MediaRequest(Base):
+    """
+    Media request model for tracking user requests with retention policies.
+    Supports movies and TV shows with configurable deletion rules.
+    """
+    __tablename__ = "media_requests"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey('users.id'), nullable=False, index=True)
+    tmdb_id = Column(Integer, nullable=False, index=True)  # TMDB movie or TV show ID
+    media_type = Column(String, nullable=False)  # movie or tv
+    title = Column(String, nullable=False)  # Media title for display
+    year = Column(Integer, nullable=True)  # Release year
+    
+    # Retention policy
+    retention_type = Column(String, nullable=False, default="watch_once")  # forever, watch_once, watch_as_released
+    auto_delete_enabled = Column(Integer, default=1)  # Boolean: 1 = enabled, 0 = disabled
+    
+    # Watch tracking
+    watched_at = Column(DateTime, nullable=True)  # First watch timestamp
+    deletion_scheduled_at = Column(DateTime, nullable=True)  # When to delete
+    
+    # Status tracking
+    status = Column(String, nullable=False, default="pending")  # pending, downloading, processing, available, failed, deleted
+    
+    # Timestamps
+    requested_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    completed_at = Column(DateTime, nullable=True)  # When media became available
+    deleted_at = Column(DateTime, nullable=True)  # When media was deleted
+    
+    def to_dict(self):
+        """Convert media request to dictionary for JSON serialization."""
+        return {
+            "id": self.id,
+            "user_id": self.user_id,
+            "tmdb_id": self.tmdb_id,
+            "media_type": self.media_type,
+            "title": self.title,
+            "year": self.year,
+            "retention_type": self.retention_type,
+            "auto_delete_enabled": bool(self.auto_delete_enabled),
+            "watched_at": self.watched_at.isoformat() if self.watched_at else None,
+            "deletion_scheduled_at": self.deletion_scheduled_at.isoformat() if self.deletion_scheduled_at else None,
+            "status": self.status,
+            "requested_at": self.requested_at.isoformat() if self.requested_at else None,
+            "completed_at": self.completed_at.isoformat() if self.completed_at else None,
+            "deleted_at": self.deleted_at.isoformat() if self.deleted_at else None
+        }
+
+
+class EpisodeRetention(Base):
+    """
+    Episode-level retention overrides for TV shows.
+    Allows users to set different retention policies for specific episodes.
+    """
+    __tablename__ = "episode_retentions"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    media_request_id = Column(Integer, ForeignKey('media_requests.id'), nullable=False, index=True)
+    season_number = Column(Integer, nullable=False)
+    episode_number = Column(Integer, nullable=False)
+    
+    # Override retention policy (overrides MediaRequest.retention_type)
+    retention_type = Column(String, nullable=False)  # forever, watch_once, watch_as_released
+    
+    # Episode-specific watch tracking
+    watched_at = Column(DateTime, nullable=True)  # When episode was watched
+    deletion_scheduled_at = Column(DateTime, nullable=True)  # When to delete episode
+    
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    
+    __table_args__ = (
+        Index('idx_episode_retention', 'media_request_id', 'season_number', 'episode_number', unique=True),
+    )
+    
+    def to_dict(self):
+        """Convert episode retention to dictionary."""
+        return {
+            "id": self.id,
+            "media_request_id": self.media_request_id,
+            "season_number": self.season_number,
+            "episode_number": self.episode_number,
+            "retention_type": self.retention_type,
+            "watched_at": self.watched_at.isoformat() if self.watched_at else None,
+            "deletion_scheduled_at": self.deletion_scheduled_at.isoformat() if self.deletion_scheduled_at else None,
+            "created_at": self.created_at.isoformat() if self.created_at else None
+        }
+
+
+class Settings(Base):
+    """
+    Key-value settings store for application configuration.
+    Enables runtime configuration updates without code changes.
+    """
+    __tablename__ = "settings"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    key = Column(String, unique=True, nullable=False, index=True)
+    value = Column(String, nullable=False)
+    description = Column(String, nullable=True)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+    
+    def to_dict(self):
+        """Convert setting to dictionary."""
+        return {
+            "id": self.id,
+            "key": self.key,
+            "value": self.value,
+            "description": self.description,
+            "updated_at": self.updated_at.isoformat() if self.updated_at else None
+        }
+

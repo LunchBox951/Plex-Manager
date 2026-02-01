@@ -17,6 +17,7 @@ from slowapi.errors import RateLimitExceeded
 from src.database import init_db
 from src.auth import router as auth_router, get_current_user
 from src.downloads import router as downloads_router
+from src.retention_api import router as retention_router
 from src.download_monitor import start_monitor, stop_monitor
 
 
@@ -130,6 +131,7 @@ templates = Jinja2Templates(directory="templates")
 # Include routers
 app.include_router(auth_router)
 app.include_router(downloads_router, prefix="/api", tags=["downloads"])
+app.include_router(retention_router)
 
 
 # Root route - Landing page
