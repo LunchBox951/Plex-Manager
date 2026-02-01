@@ -1,0 +1,498 @@
+"""
+Torrent scoring engine for quality-based ranking and selection.
+Implements resolution detection, seeder/size ratio scoring, season pack bonuses, and bandwidth penalties.
+"""
+
+import re
+import json
+import logging
+from typing import List, Set, Optional, Dict
+from dataclasses import dataclass
+
+from src.prowlarr import TorrentResult
+from src.qbittorrent import QBittorrentClient
+
+logger = logging.getLogger(__name__)
+
+# Resolution multipliers for scoring
+RESOLUTION_MULTIPLIERS = {
+    '2160p': 2.0,  # 4K
+    '1080p': 1.5,
+    '720p': 1.0,
+    '480p': 0.5,
+    '360p': 0.3,
+}
+
+# Patterns to detect and reject
+BLOCKED_PATTERNS = [
+    r'\bCAM\b', r'\bTS\b', r'\bHDCAM\b', r'\bTELECINE\b',
+    r'\bSCREENER\b', r'\bHDTS\b', r'\bR5\b', r'\bR6\b'
+]
+
+# Season pack detection patterns
+SEASON_PACK_PATTERNS = [
+    r'S\d{2}(?!E\d)',  # S01, S02 (not followed by episode)
+    r'Season\s*\d+',   # Season 1, Season 2
+    r'\bComplete\b',   # Complete
+    r'Full\s*Season',  # Full Season
+    r'\d+x\d+-\d+x\d+', # 1x01-1x10
+]
+
+# Episode count detection patterns (for title parsing)
+EPISODE_COUNT_PATTERNS = [
+    r'(\d+)\s*Episodes?',  # "10 Episodes"
+    r'(\d+)\s*Eps?',       # "10 Eps"
+    r'E\d+-E(\d+)',        # "E01-E10"
+    r'(\d+)x\d+',          # "1x10" (season x episodes)
+]
+
+# Minimum requirements
+MIN_SEEDERS = 5
+MIN_SIZE_MB = 100
+
+
+@dataclass
+class ScoredTorrent:
+    """Torrent with calculated score and metadata."""
+    torrent: TorrentResult
+    base_score: float
+    final_score: float
+    resolution: Optional[str]
+    is_season_pack: bool
+    episode_count: Optional[int]
+    penalty_applied: Optional[float]
+    reason: str
+
+
+def extract_resolution(title: str) -> Optional[str]:
+    """
+    Extract resolution from torrent title.
+    
+    Args:
+        title: Torrent title
+        
+    Returns:
+        Resolution string (e.g., '1080p', '720p') or None
+    """
+    for resolution in RESOLUTION_MULTIPLIERS.keys():
+        if resolution in title:
+            return resolution
+    
+    # Check for 4K/UHD variants
+    if re.search(r'\b(4K|UHD|2160)\b', title, re.IGNORECASE):
+        return '2160p'
+    
+    return None
+
+
+def is_blocked_release(title: str) -> bool:
+    """
+    Check if torrent title matches blocked release patterns (CAM, TS, etc).
+    
+    Args:
+        title: Torrent title
+        
+    Returns:
+        True if blocked, False otherwise
+    """
+    for pattern in BLOCKED_PATTERNS:
+        if re.search(pattern, title, re.IGNORECASE):
+            logger.debug(f"Blocked release detected: {title} (pattern: {pattern})")
+            return True
+    return False
+
+
+def detect_season_pack(title: str) -> bool:
+    """
+    Detect if torrent is a season pack (full or multi-episode).
+    
+    Args:
+        title: Torrent title
+        
+    Returns:
+        True if season pack detected, False otherwise
+    """
+    for pattern in SEASON_PACK_PATTERNS:
+        if re.search(pattern, title, re.IGNORECASE):
+            return True
+    return False
+
+
+def parse_episode_count_from_title(title: str) -> Optional[int]:
+    """
+    Parse episode count from torrent title (Tier 1 detection).
+    
+    Args:
+        title: Torrent title
+        
+    Returns:
+        Episode count if found, None otherwise
+        
+    Examples:
+        "Show S01 10 Episodes" -> 10
+        "Show 1x10" -> 10
+        "Show E01-E10" -> 10
+    """
+    for pattern in EPISODE_COUNT_PATTERNS:
+        match = re.search(pattern, title, re.IGNORECASE)
+        if match:
+            try:
+                count = int(match.group(1))
+                logger.debug(f"Parsed episode count from title: {count} (pattern: {pattern})")
+                return count
+            except (IndexError, ValueError):
+                continue
+    
+    return None
+
+
+def get_episode_count_from_tmdb(tmdb_id: int, season_number: int, db_session) -> Optional[int]:
+    """
+    Get episode count from TMDB cache (Tier 2 detection).
+    
+    Args:
+        tmdb_id: TMDB ID
+        season_number: Season number
+        db_session: Database session
+        
+    Returns:
+        Episode count from cache or None if not cached
+    """
+    from src.models import TMDBCache
+    
+    cache_entry = db_session.query(TMDBCache).filter(
+        TMDBCache.tmdb_id == tmdb_id,
+        TMDBCache.season_number == season_number
+    ).first()
+    
+    if cache_entry:
+        logger.debug(f"Found TMDB cache: {cache_entry.episode_count} episodes")
+        return cache_entry.episode_count
+    
+    return None
+
+
+def get_episode_count_from_magnet(magnet_link: str, qb_client: QBittorrentClient) -> Optional[int]:
+    """
+    Get episode count by analyzing magnet metadata (Tier 3 detection).
+    
+    This is the most accurate but expensive method - only use for top finalists.
+    Temporarily adds magnet to qBittorrent to fetch file list, then removes it.
+    
+    Args:
+        magnet_link: Magnet link
+        qb_client: qBittorrent client instance
+        
+    Returns:
+        Episode count based on video files, or None if failed
+    """
+    import time
+    from src.torrent_validator import is_video_file, parse_episode_info
+    
+    try:
+        # Extract info hash for tracking
+        info_hash = QBittorrentClient.extract_info_hash(magnet_link)
+        if not info_hash:
+            logger.warning("Could not extract info hash from magnet")
+            return None
+        
+        # Add torrent in paused state
+        logger.debug(f"Adding magnet temporarily for metadata: {info_hash[:8]}...")
+        if not qb_client.add_magnet(magnet_link, paused=True):
+            logger.warning("Failed to add magnet to qBittorrent")
+            return None
+        
+        # Wait for metadata to download
+        time.sleep(3)
+        
+        # Get file list
+        files = qb_client.get_torrent_files(info_hash)
+        if not files:
+            logger.warning("No files found in torrent metadata")
+            qb_client.delete_torrent(info_hash, delete_files=False)
+            return None
+        
+        # Count unique episode numbers in video files
+        episode_numbers = set()
+        for file_info in files:
+            filename = file_info.get('name', '')
+            if is_video_file(filename):
+                ep_info = parse_episode_info(filename)
+                if ep_info and ep_info.get('episode'):
+                    episode_numbers.add(ep_info['episode'])
+        
+        # Clean up - delete torrent
+        qb_client.delete_torrent(info_hash, delete_files=False)
+        
+        count = len(episode_numbers) if episode_numbers else None
+        logger.debug(f"Detected {count} episodes from magnet metadata")
+        return count
+        
+    except Exception as e:
+        logger.error(f"Failed to get episode count from magnet: {e}")
+        return None
+
+
+def get_episode_count(
+    torrent: TorrentResult,
+    tmdb_id: Optional[int] = None,
+    season_number: Optional[int] = None,
+    db_session = None,
+    qb_client: Optional[QBittorrentClient] = None,
+    use_magnet: bool = False
+) -> Optional[int]:
+    """
+    Get episode count using 3-tier detection strategy.
+    
+    Tier 1: Parse title (fast, ~60% accurate)
+    Tier 2: Query TMDB cache (fast, ~95% accurate)
+    Tier 3: Analyze magnet metadata (slow, ~100% accurate, only for top 3)
+    
+    Args:
+        torrent: Torrent result
+        tmdb_id: TMDB ID for cache lookup
+        season_number: Season number for cache lookup
+        db_session: Database session for cache access
+        qb_client: qBittorrent client for metadata fetching
+        use_magnet: Whether to use Tier 3 (expensive operation)
+        
+    Returns:
+        Episode count or None if not detected
+    """
+    # Tier 1: Title parsing
+    count = parse_episode_count_from_title(torrent.title)
+    if count:
+        logger.debug(f"Episode count from title: {count}")
+        return count
+    
+    # Tier 2: TMDB cache
+    if tmdb_id and season_number and db_session:
+        count = get_episode_count_from_tmdb(tmdb_id, season_number, db_session)
+        if count:
+            logger.debug(f"Episode count from TMDB cache: {count}")
+            return count
+    
+    # Tier 3: Magnet metadata (only if explicitly allowed)
+    if use_magnet and qb_client:
+        count = get_episode_count_from_magnet(torrent.magnet_link, qb_client)
+        if count:
+            logger.debug(f"Episode count from magnet: {count}")
+            return count
+    
+    logger.debug("Could not determine episode count")
+    return None
+
+
+def calculate_base_score(torrent: TorrentResult) -> float:
+    """
+    Calculate base torrent score using seeders/size ratio and resolution.
+    
+    Formula: (seeders / size_gb) × resolution_multiplier
+    
+    Args:
+        torrent: Torrent result
+        
+    Returns:
+        Base score (0.0 if blocked/invalid)
+    """
+    # Block low-quality releases
+    if is_blocked_release(torrent.title):
+        return 0.0
+    
+    # Minimum requirements
+    if torrent.seeders < MIN_SEEDERS:
+        return 0.0
+    
+    if torrent.size_bytes < MIN_SIZE_MB * 1024 * 1024:
+        return 0.0
+    
+    # Calculate seeder/size ratio
+    size_gb = max(torrent.size_gb, 0.1)  # Avoid division by zero
+    base_score = torrent.seeders / size_gb
+    
+    # Apply resolution multiplier
+    resolution = extract_resolution(torrent.title)
+    if resolution:
+        multiplier = RESOLUTION_MULTIPLIERS.get(resolution, 1.0)
+        base_score *= multiplier
+    else:
+        # Unknown resolution - heavily penalize with 0.1x multiplier
+        base_score *= 0.1
+    
+    return base_score
+
+
+def apply_season_bonus(score: float, episode_count: int) -> float:
+    """
+    Apply season pack bonus by multiplying score by episode count.
+    
+    Example: 10-episode season pack = 10× higher score than single episode
+    
+    Args:
+        score: Base score
+        episode_count: Number of episodes in pack
+        
+    Returns:
+        Score with season bonus applied
+    """
+    return score * episode_count
+
+
+def apply_bandwidth_penalty(score: float, requested_episodes: int, total_episodes: int) -> float:
+    """
+    Apply quadratic bandwidth penalty for partial season requests.
+    
+    Formula: score × (requested / total)²
+    
+    Example: Requesting 5/10 episodes → score × 0.25
+    
+    Args:
+        score: Base score
+        requested_episodes: Number of episodes requested
+        total_episodes: Total episodes in pack
+        
+    Returns:
+        Score with penalty applied
+    """
+    if total_episodes == 0:
+        return score
+    
+    ratio = requested_episodes / total_episodes
+    penalty = ratio ** 2
+    return score * penalty
+
+
+def rank_torrents(
+    torrents: List[TorrentResult],
+    failed_hashes: Set[str],
+    tmdb_id: Optional[int] = None,
+    season_number: Optional[int] = None,
+    requested_episodes: Optional[List[int]] = None,
+    db_session = None,
+    qb_client: Optional[QBittorrentClient] = None
+) -> List[ScoredTorrent]:
+    """
+    Rank torrents by score with bonuses/penalties applied.
+    
+    Args:
+        torrents: List of torrent results from Prowlarr
+        failed_hashes: Set of previously failed torrent hashes to exclude
+        tmdb_id: TMDB ID for episode count lookup
+        season_number: Season number for TV shows
+        requested_episodes: Specific episodes requested (None = full season)
+        db_session: Database session
+        qb_client: qBittorrent client for metadata fetching
+        
+    Returns:
+        List of scored torrents sorted by final_score descending
+    """
+    scored_torrents = []
+    
+    for torrent in torrents:
+        # Skip failed torrents
+        if torrent.info_hash.lower() in failed_hashes:
+            logger.debug(f"Skipping failed torrent: {torrent.title}")
+            continue
+        
+        # Calculate base score
+        base_score = calculate_base_score(torrent)
+        if base_score == 0.0:
+            logger.debug(f"Torrent filtered out (low score): {torrent.title}")
+            continue
+        
+        final_score = base_score
+        episode_count = None
+        penalty_applied = None
+        is_season_pack = detect_season_pack(torrent.title)
+        resolution = extract_resolution(torrent.title)
+        
+        # Apply season pack bonus/penalty for TV shows
+        if season_number is not None and is_season_pack:
+            # Get episode count (Tier 1 + 2 only at this stage)
+            episode_count = get_episode_count(
+                torrent, tmdb_id, season_number, db_session, qb_client, use_magnet=False
+            )
+            
+            if episode_count:
+                # Apply season bonus
+                final_score = apply_season_bonus(base_score, episode_count)
+                
+                # Apply bandwidth penalty if partial season requested
+                if requested_episodes and len(requested_episodes) < episode_count:
+                    penalty_ratio = len(requested_episodes) / episode_count
+                    final_score = apply_bandwidth_penalty(final_score, len(requested_episodes), episode_count)
+                    penalty_applied = penalty_ratio ** 2
+        
+        reason = f"{resolution or 'Unknown'} - {torrent.seeders} seeders"
+        if is_season_pack and episode_count:
+            reason += f" - {episode_count} episodes"
+        if penalty_applied:
+            reason += f" - {penalty_applied:.1%} bandwidth penalty"
+        
+        scored_torrents.append(ScoredTorrent(
+            torrent=torrent,
+            base_score=base_score,
+            final_score=final_score,
+            resolution=resolution,
+            is_season_pack=is_season_pack,
+            episode_count=episode_count,
+            penalty_applied=penalty_applied,
+            reason=reason
+        ))
+    
+    # Sort by final score descending
+    scored_torrents.sort(key=lambda x: x.final_score, reverse=True)
+    
+    # Refine top 3 with magnet metadata if needed
+    if qb_client and season_number is not None:
+        for i, scored in enumerate(scored_torrents[:3]):
+            if scored.is_season_pack and not scored.episode_count:
+                logger.info(f"Refining top {i+1} torrent with magnet metadata...")
+                episode_count = get_episode_count(
+                    scored.torrent, tmdb_id, season_number, db_session, qb_client, use_magnet=True
+                )
+                
+                if episode_count:
+                    # Recalculate score with accurate episode count
+                    scored.episode_count = episode_count
+                    scored.final_score = apply_season_bonus(scored.base_score, episode_count)
+                    
+                    if requested_episodes and len(requested_episodes) < episode_count:
+                        scored.final_score = apply_bandwidth_penalty(
+                            scored.final_score, len(requested_episodes), episode_count
+                        )
+                        scored.penalty_applied = (len(requested_episodes) / episode_count) ** 2
+                    
+                    scored.reason = f"{scored.resolution or 'Unknown'} - {scored.torrent.seeders} seeders - {episode_count} episodes"
+        
+        # Re-sort after refinement
+        scored_torrents.sort(key=lambda x: x.final_score, reverse=True)
+    
+    logger.info(f"Ranked {len(scored_torrents)} torrents (filtered {len(torrents) - len(scored_torrents)})")
+    return scored_torrents
+
+
+def select_best_torrent(
+    scored_torrents: List[ScoredTorrent],
+    min_score: float = 1.0
+) -> Optional[ScoredTorrent]:
+    """
+    Select the best torrent from scored list.
+    
+    Args:
+        scored_torrents: List of scored torrents (should be pre-sorted)
+        min_score: Minimum acceptable score
+        
+    Returns:
+        Best torrent or None if no suitable torrent found
+    """
+    if not scored_torrents:
+        return None
+    
+    best = scored_torrents[0]
+    if best.final_score < min_score:
+        logger.warning(f"Best torrent score ({best.final_score:.2f}) below minimum ({min_score})")
+        return None
+    
+    logger.info(f"Selected torrent: {best.torrent.title} (score: {best.final_score:.2f})")
+    return best

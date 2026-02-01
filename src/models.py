@@ -3,8 +3,8 @@ Database models for Plex Manager.
 Currently implements User model for authentication and Download model for torrent management.
 """
 
-from datetime import datetime
-from sqlalchemy import Column, Integer, String, DateTime, Float, ForeignKey, Text
+from datetime import datetime, date
+from sqlalchemy import Column, Integer, String, DateTime, Float, ForeignKey, Text, Date, Index
 from src.database import Base
 
 
@@ -82,6 +82,12 @@ class Download(Base):
     failed_at = Column(DateTime, nullable=True)  # When marked as failed
     will_timeout_at = Column(DateTime, nullable=True)  # Calculated timeout date
     
+    # TMDB metadata for media request tracking
+    tmdb_id = Column(Integer, nullable=True, index=True)  # TMDB movie or TV show ID
+    year = Column(Integer, nullable=True)  # Release year for matching
+    season = Column(Integer, nullable=True)  # For TV shows
+    episodes = Column(Text, nullable=True)  # JSON array of requested episode numbers
+    
     # Foreign key for future media request integration
     media_request_id = Column(Integer, nullable=True)  # ForeignKey('media_requests.id') when implemented
     
@@ -96,10 +102,68 @@ class Download(Base):
             "target_seed_ratio": self.target_seed_ratio,
             "media_type": self.media_type,
             "timeout_days": self.timeout_days,
-            "failed_reason": self.failed_reason,
-            "added_at": self.added_at.isoformat() if self.added_at else None,
-            "completed_at": self.completed_at.isoformat() if self.completed_at else None,
-            "failed_at": self.failed_at.isoformat() if self.failed_at else None,
-            "will_timeout_at": self.will_timeout_at.isoformat() if self.will_timeout_at else None,
-            "media_request_id": self.media_request_id
+            "tmdb_id": self.tmdb_id,
+            "year": self.year,
+            "season": self.season,
+            "episodes": self.episodes
+        }
+
+
+class TMDBCache(Base):
+    """
+    Cache for TMDB season episode counts.
+    Reduces API calls and provides episode count for season pack scoring.
+    """
+    __tablename__ = "tmdb_cache"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    tmdb_id = Column(Integer, nullable=False, index=True)
+    season_number = Column(Integer, nullable=False)
+    episode_count = Column(Integer, nullable=False)
+    season_status = Column(String, nullable=False, default="completed")  # completed or ongoing
+    next_episode_air_date = Column(Date, nullable=True)  # For ongoing seasons
+    cached_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+    
+    __table_args__ = (
+        Index('idx_tmdb_season', 'tmdb_id', 'season_number', unique=True),
+    )
+    
+    def to_dict(self):
+        """Convert cache entry to dictionary."""
+        return {
+            "id": self.id,
+            "tmdb_id": self.tmdb_id,
+            "season_number": self.season_number,
+            "episode_count": self.episode_count,
+            "season_status": self.season_status,
+            "next_episode_air_date": self.next_episode_air_date.isoformat() if self.next_episode_air_date else None,
+            "cached_at": self.cached_at.isoformat() if self.cached_at else None,
+            "updated_at": self.updated_at.isoformat() if self.updated_at else None
+        }
+
+
+class SeasonRequest(Base):
+    """
+    Tracks specific season/episode requests within a download.
+    Enables tracking partial season downloads and episode-level status.
+    """
+    __tablename__ = "season_requests"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    download_id = Column(Integer, ForeignKey('downloads.id'), nullable=False, index=True)
+    season_number = Column(Integer, nullable=False)
+    episode_numbers = Column(Text, nullable=True)  # JSON array of episode numbers, null = full season
+    status = Column(String, nullable=False, default="pending")  # pending, partial, completed, failed
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    
+    def to_dict(self):
+        """Convert season request to dictionary."""
+        return {
+            "id": self.id,
+            "download_id": self.download_id,
+            "season_number": self.season_number,
+            "episode_numbers": self.episode_numbers,
+            "status": self.status,
+            "created_at": self.created_at.isoformat() if self.created_at else None
         }

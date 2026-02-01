@@ -12,12 +12,15 @@ import os
 import sys
 import json
 import time
+import logging
 from collections import deque
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 from typing import Optional, Dict, List, Any, Tuple
 
 from tmdbv3api import TMDb, Movie, TV, Trending
 import requests
+
+logger = logging.getLogger(__name__)
 
 
 # ============================================================================
@@ -695,3 +698,216 @@ def validate_api_key() -> bool:
 if __name__ != '__main__':
     if not validate_api_key():
         print("WARNING: TMDB API key validation failed. Some features may not work.")
+
+
+# ============================================================================
+# Season Caching for Episode Count
+# ============================================================================
+
+def get_season_episode_count(
+    tmdb_id: int,
+    season_number: int,
+    db_session
+) -> Optional[int]:
+    """
+    Get episode count for a TV season with intelligent caching.
+    
+    Caching strategy:
+    - Completed seasons: Cached indefinitely
+    - Ongoing seasons: Cached with next_episode_air_date, refreshed when date passes
+    
+    Args:
+        tmdb_id: TMDB TV show ID
+        season_number: Season number
+        db_session: SQLAlchemy database session
+        
+    Returns:
+        Episode count or None if failed
+        
+    Example:
+        >>> from src.database import get_db
+        >>> db = next(get_db())
+        >>> count = get_season_episode_count(1396, 1, db)  # Breaking Bad S01
+        >>> print(count)  # 7
+    """
+    from src.models import TMDBCache
+    
+    logger.info(f"Getting episode count for TMDB {tmdb_id} Season {season_number}")
+    
+    # Check cache first
+    cache_entry = db_session.query(TMDBCache).filter(
+        TMDBCache.tmdb_id == tmdb_id,
+        TMDBCache.season_number == season_number
+    ).first()
+    
+    current_date = date.today()
+    
+    if cache_entry:
+        # Completed seasons are cached indefinitely
+        if cache_entry.season_status == 'completed':
+            logger.debug(f"Cache hit (completed season): {cache_entry.episode_count} episodes")
+            return cache_entry.episode_count
+        
+        # Ongoing seasons: check if cache is still valid
+        if cache_entry.season_status == 'ongoing':
+            if cache_entry.next_episode_air_date and cache_entry.next_episode_air_date > current_date:
+                logger.debug(f"Cache hit (ongoing season): {cache_entry.episode_count} episodes")
+                return cache_entry.episode_count
+            else:
+                logger.debug("Ongoing season cache expired, refreshing...")
+    
+    # Fetch from TMDB API
+    try:
+        logger.info(f"Fetching season info from TMDB API...")
+        
+        # Use tmdbv3api to get season details
+        season_details = safe_tmdb_call(tv_service.get_season, tmdb_id, season_number)
+        
+        if not season_details or not hasattr(season_details, 'episodes'):
+            logger.error(f"Failed to get season details from TMDB")
+            return None
+        
+        episode_count = len(season_details.episodes)
+        logger.info(f"TMDB API returned {episode_count} episodes")
+        
+        # Determine season status and next air date
+        season_status = 'completed'
+        next_episode_air_date = None
+        
+        # Check if season is ongoing by looking at episode air dates
+        for episode in season_details.episodes:
+            if hasattr(episode, 'air_date') and episode.air_date:
+                try:
+                    # Parse air date
+                    air_date = datetime.strptime(episode.air_date, '%Y-%m-%d').date()
+                    
+                    # If any episode airs in the future, season is ongoing
+                    if air_date > current_date:
+                        season_status = 'ongoing'
+                        if next_episode_air_date is None or air_date < next_episode_air_date:
+                            next_episode_air_date = air_date
+                except Exception as e:
+                    logger.warning(f"Failed to parse air date: {episode.air_date} - {e}")
+        
+        logger.info(f"Season status: {season_status}, next air date: {next_episode_air_date}")
+        
+        # Update or create cache entry
+        if cache_entry:
+            cache_entry.episode_count = episode_count
+            cache_entry.season_status = season_status
+            cache_entry.next_episode_air_date = next_episode_air_date
+            cache_entry.updated_at = datetime.utcnow()
+        else:
+            cache_entry = TMDBCache(
+                tmdb_id=tmdb_id,
+                season_number=season_number,
+                episode_count=episode_count,
+                season_status=season_status,
+                next_episode_air_date=next_episode_air_date
+            )
+            db_session.add(cache_entry)
+        
+        db_session.commit()
+        logger.info(f"Cached episode count: {episode_count} (status: {season_status})")
+        
+        return episode_count
+    
+    except Exception as e:
+        logger.error(f"Failed to fetch season info from TMDB: {e}")
+        db_session.rollback()
+        return None
+
+
+def refresh_ongoing_seasons_cache(db_session) -> int:
+    """
+    Background job to refresh ongoing season caches.
+    
+    Queries all TMDBCache entries with status='ongoing' and next_episode_air_date <= today,
+    then updates their episode counts from TMDB API.
+    
+    Args:
+        db_session: SQLAlchemy database session
+        
+    Returns:
+        Number of cache entries refreshed
+        
+    Example (APScheduler integration):
+        >>> from apscheduler.schedulers.background import BackgroundScheduler
+        >>> scheduler = BackgroundScheduler()
+        >>> scheduler.add_job(
+        ...     func=lambda: refresh_ongoing_seasons_cache(next(get_db())),
+        ...     trigger='cron',
+        ...     hour=2,
+        ...     minute=0
+        ... )
+        >>> scheduler.start()
+    """
+    from src.models import TMDBCache
+    
+    current_date = date.today()
+    logger.info(f"Refreshing ongoing season caches (date: {current_date})")
+    
+    try:
+        # Find ongoing seasons that need refresh
+        expired_entries = db_session.query(TMDBCache).filter(
+            TMDBCache.season_status == 'ongoing',
+            TMDBCache.next_episode_air_date <= current_date
+        ).all()
+        
+        logger.info(f"Found {len(expired_entries)} ongoing seasons to refresh")
+        
+        refreshed_count = 0
+        for entry in expired_entries:
+            try:
+                # Fetch updated season info
+                season_details = safe_tmdb_call(
+                    tv_service.get_season,
+                    entry.tmdb_id,
+                    entry.season_number
+                )
+                
+                if not season_details or not hasattr(season_details, 'episodes'):
+                    logger.warning(f"Failed to refresh TMDB {entry.tmdb_id} S{entry.season_number}")
+                    continue
+                
+                episode_count = len(season_details.episodes)
+                
+                # Determine new status
+                season_status = 'completed'
+                next_episode_air_date = None
+                
+                for episode in season_details.episodes:
+                    if hasattr(episode, 'air_date') and episode.air_date:
+                        try:
+                            air_date = datetime.strptime(episode.air_date, '%Y-%m-%d').date()
+                            if air_date > current_date:
+                                season_status = 'ongoing'
+                                if next_episode_air_date is None or air_date < next_episode_air_date:
+                                    next_episode_air_date = air_date
+                        except Exception as e:
+                            logger.warning(f"Failed to parse air date: {e}")
+                
+                # Update cache
+                entry.episode_count = episode_count
+                entry.season_status = season_status
+                entry.next_episode_air_date = next_episode_air_date
+                entry.updated_at = datetime.utcnow()
+                
+                logger.info(f"Refreshed TMDB {entry.tmdb_id} S{entry.season_number}: "
+                          f"{episode_count} episodes, status: {season_status}")
+                
+                refreshed_count += 1
+                
+            except Exception as e:
+                logger.error(f"Failed to refresh cache entry: {e}")
+                continue
+        
+        db_session.commit()
+        logger.info(f"Successfully refreshed {refreshed_count} ongoing season caches")
+        return refreshed_count
+    
+    except Exception as e:
+        logger.error(f"Failed to refresh ongoing seasons: {e}")
+        db_session.rollback()
+        return 0
+
