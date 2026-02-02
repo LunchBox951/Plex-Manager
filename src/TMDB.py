@@ -17,7 +17,7 @@ from collections import deque
 from datetime import datetime, timedelta, date
 from typing import Optional, Dict, List, Any, Tuple
 
-from tmdbv3api import TMDb, Movie, TV, Trending
+from tmdbv3api import TMDb, Movie, TV, Trending, Season
 import requests
 
 logger = logging.getLogger(__name__)
@@ -109,6 +109,7 @@ tmdb.REQUESTS_TIMEOUT = 10  # Set 10 second timeout for all requests
 # Initialize TMDB service objects
 movie_service = Movie()
 tv_service = TV()
+season_service = Season()
 trending_service = Trending()
 
 
@@ -505,51 +506,48 @@ def get_tv_details(tmdb_id: int) -> Dict[str, Any]:
     return details
 
 
-def get_trending(media_type: str = 'all', time_window: str = 'week') -> List[Dict[str, Any]]:
+def get_trending(media_type: str = 'all', time_window: str = 'week', page: int = 1) -> Dict[str, Any]:
     """
     Get trending movies and TV shows.
     
     Args:
         media_type: Type of media ('all', 'movie', 'tv')
         time_window: Time window ('day' or 'week')
+        page: Page number (1-based, default: 1)
         
     Returns:
-        List of trending media with keys:
-            - id: TMDB ID
-            - title/name: Media title
-            - media_type: 'movie' or 'tv'
-            - release_date/first_air_date: Release date
-            - overview: Description
-            - poster_path: Poster image path
-            - backdrop_path: Backdrop image path
-            - vote_average: Rating (0-10)
+        Dict with keys:
+            - results: List of trending media items
+            - page: Current page number
+            - total_pages: Total number of pages available
+            - total_results: Total number of results
     """
-    cache_key = f"trending_{media_type}_{time_window}"
+    cache_key = f"trending_{media_type}_{time_window}_page{page}"
     
     # Check global cache (24h TTL)
     cached = _get_global_cache(cache_key, cache_type='trending')
     if cached:
-        print(f"Cache hit for trending: {media_type}/{time_window}")
+        print(f"Cache hit for trending: {media_type}/{time_window} page {page}")
         return cached
     
     # Make API call based on media type and time window
-    print(f"Fetching trending from TMDB: {media_type}/{time_window}")
+    print(f"Fetching trending from TMDB: {media_type}/{time_window} page {page}")
     
     if media_type == 'movie':
         if time_window == 'week':
-            response = safe_tmdb_call(trending_service.movie_week)
+            response = safe_tmdb_call(trending_service.movie_week, page=page)
         else:
-            response = safe_tmdb_call(trending_service.movie_day)
+            response = safe_tmdb_call(trending_service.movie_day, page=page)
     elif media_type == 'tv':
         if time_window == 'week':
-            response = safe_tmdb_call(trending_service.tv_week)
+            response = safe_tmdb_call(trending_service.tv_week, page=page)
         else:
-            response = safe_tmdb_call(trending_service.tv_day)
+            response = safe_tmdb_call(trending_service.tv_day, page=page)
     else:  # all
         if time_window == 'week':
-            response = safe_tmdb_call(trending_service.all_week)
+            response = safe_tmdb_call(trending_service.all_week, page=page)
         else:
-            response = safe_tmdb_call(trending_service.all_day)
+            response = safe_tmdb_call(trending_service.all_day, page=page)
     
     # Extract results from response
     results = response.results if hasattr(response, 'results') else response
@@ -580,10 +578,18 @@ def get_trending(media_type: str = 'all', time_window: str = 'week') -> List[Dic
         
         formatted_results.append(result)
     
-    # Cache results
-    _set_global_cache(cache_key, formatted_results, cache_type='trending')
+    # Extract pagination info from response
+    result_dict = {
+        'results': formatted_results,
+        'page': getattr(response, 'page', page),
+        'total_pages': getattr(response, 'total_pages', 1),
+        'total_results': getattr(response, 'total_results', len(formatted_results))
+    }
     
-    return formatted_results
+    # Cache results
+    _set_global_cache(cache_key, result_dict, cache_type='trending')
+    
+    return result_dict
 
 
 # ============================================================================
@@ -760,8 +766,8 @@ def get_season_episode_count(
     try:
         logger.info(f"Fetching season info from TMDB API...")
         
-        # Use tmdbv3api to get season details
-        season_details = safe_tmdb_call(tv_service.get_season, tmdb_id, season_number)
+        # Use tmdbv3api Season service to get season details
+        season_details = safe_tmdb_call(season_service.details, tmdb_id, season_number)
         
         if not season_details or not hasattr(season_details, 'episodes'):
             logger.error(f"Failed to get season details from TMDB")
@@ -861,7 +867,7 @@ def refresh_ongoing_seasons_cache(db_session) -> int:
             try:
                 # Fetch updated season info
                 season_details = safe_tmdb_call(
-                    tv_service.get_season,
+                    season_service.details,
                     entry.tmdb_id,
                     entry.season_number
                 )
@@ -944,7 +950,7 @@ def download_image(path: str, size: str = 'w500', cache_type: str = 'trending') 
     
     # Check if file already exists
     if os.path.exists(file_path):
-        return f"w500/{filename}"
+        return f"{size}/{filename}"
     
     # Download image
     try:
@@ -974,7 +980,7 @@ def download_image(path: str, size: str = 'w500', cache_type: str = 'trending') 
             json.dump(metadata, f, indent=2)
         
         logger.info(f"Downloaded TMDB image: {filename}")
-        return f"w500/{filename}"
+        return f"{size}/{filename}"
         
     except Exception as e:
         logger.error(f"Failed to download image {path}: {e}")
@@ -1017,7 +1023,10 @@ def get_or_fetch_trending(media_type: str, time_window: str = 'week', force_refr
     
     # Fetch from TMDB API
     logger.info(f"Fetching trending {media_type} from TMDB API")
-    results = get_trending(media_type, time_window)
+    trending_data = get_trending(media_type, time_window)
+    
+    # Extract results list from the dict
+    results = trending_data.get('results', []) if isinstance(trending_data, dict) else trending_data
     
     # Download images to cache
     for item in results:

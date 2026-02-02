@@ -221,7 +221,7 @@
                     <div class="retention-option-content">
                         <div class="retention-option-title">Watch As Released</div>
                         <div class="retention-option-description">
-                            Delete episodes after the next one airs. Keeps your library current.
+                            Delete 7 days after watching (once next episode airs). Keeps your library current.
                         </div>
                     </div>
                 </label>
@@ -295,18 +295,94 @@
             });
         }
 
+        // Cache for loaded episodes
+        const episodeCache = new Map();
+
         // Toggle season expansion
-        function toggleSeason(seasonNumber) {
+        async function toggleSeason(seasonNumber) {
             const episodesDiv = document.getElementById(`episodes-${seasonNumber}`);
             const seasonItem = episodesDiv.parentElement;
+            const expandIcon = seasonItem.querySelector('.expand-icon');
             
             if (episodesDiv.classList.contains('hidden')) {
+                // Expanding - load episodes if not cached
                 episodesDiv.classList.remove('hidden');
-                seasonItem.querySelector('.expand-icon').textContent = '▲';
+                expandIcon.textContent = '▲';
+                
+                // Check if episodes already loaded
+                if (!episodeCache.has(seasonNumber)) {
+                    // Show loading state
+                    episodesDiv.innerHTML = '<div class="loading-spinner"><div class="spinner"></div></div>';
+                    
+                    try {
+                        const response = await fetch(`/api/media/${mediaData.tmdb_id}/season/${seasonNumber}/episodes`);
+                        const data = await response.json();
+                        
+                        if (data.episodes && data.episodes.length > 0) {
+                            // Cache the episodes
+                            episodeCache.set(seasonNumber, data.episodes);
+                            
+                            // Render episodes
+                            renderEpisodes(seasonNumber, data.episodes);
+                        } else {
+                            episodesDiv.innerHTML = '<p class="no-episodes">No episode details available</p>';
+                        }
+                    } catch (error) {
+                        console.error('Failed to load episodes:', error);
+                        episodesDiv.innerHTML = '<p class="no-episodes">Failed to load episodes</p>';
+                    }
+                }
             } else {
+                // Collapsing
                 episodesDiv.classList.add('hidden');
-                seasonItem.querySelector('.expand-icon').textContent = '▼';
+                expandIcon.textContent = '▼';
             }
+        }
+        
+        // Render episodes list with stills
+        function renderEpisodes(seasonNumber, episodes) {
+            const episodesDiv = document.getElementById(`episodes-${seasonNumber}`);
+            
+            let html = '<div class="episodes-list">';
+            episodes.forEach(episode => {
+                const stillUrl = episode.still_path 
+                    ? `/cache-images/w185${episode.still_path}` 
+                    : '/static/img/placeholder-episode.jpg';
+                
+                const overview = episode.overview || 'No description available.';
+                const airDate = episode.air_date ? new Date(episode.air_date).toLocaleDateString() : 'TBA';
+                
+                html += `
+                    <div class="episode-item-detailed">
+                        <div class="episode-checkbox-container">
+                            <input type="checkbox" 
+                                   class="episode-checkbox"
+                                   data-season="${seasonNumber}"
+                                   data-episode="${episode.episode_number}"
+                                   id="ep-${seasonNumber}-${episode.episode_number}">
+                        </div>
+                        <div class="episode-still-container">
+                            <img src="${stillUrl}" 
+                                 alt="Episode ${episode.episode_number}" 
+                                 class="episode-still"
+                                 onerror="this.src='/static/img/placeholder-episode.jpg'">
+                        </div>
+                        <div class="episode-info-container">
+                            <label for="ep-${seasonNumber}-${episode.episode_number}" class="episode-title">
+                                E${episode.episode_number}: ${episode.name}
+                            </label>
+                            <div class="episode-meta">
+                                <span class="episode-air-date">${airDate}</span>
+                                ${episode.vote_average > 0 ? `<span class="episode-rating">⭐ ${episode.vote_average.toFixed(1)}</span>` : ''}
+                            </div>
+                            <p class="episode-overview">${overview}</p>
+                        </div>
+                    </div>
+                `;
+            });
+            html += '</div>';
+            
+            episodesDiv.innerHTML = html;
         }
 
         // Setup retention modal

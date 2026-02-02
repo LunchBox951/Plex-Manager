@@ -354,6 +354,116 @@
     opacity: 0.7;
 }
 
+/* Episode List with Stills */
+.episodes-list {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    padding: 10px 0;
+}
+
+.episode-item-detailed {
+    display: flex;
+    gap: 16px;
+    padding: 12px;
+    background-color: rgba(0, 0, 0, 0.3);
+    border-radius: var(--border-radius);
+    transition: background-color var(--transition-speed);
+    align-items: flex-start;
+}
+
+.episode-item-detailed:hover {
+    background-color: rgba(0, 0, 0, 0.5);
+}
+
+.episode-checkbox-container {
+    flex-shrink: 0;
+    padding-top: 4px;
+}
+
+.episode-still-container {
+    flex-shrink: 0;
+    width: 160px;
+    aspect-ratio: 16 / 9;
+    border-radius: 4px;
+    overflow: hidden;
+    background-color: rgba(0, 0, 0, 0.5);
+}
+
+.episode-still {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+}
+
+.episode-info-container {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.episode-title {
+    font-size: 16px;
+    font-weight: 600;
+    color: var(--plex-white);
+    cursor: pointer;
+    margin: 0;
+}
+
+.episode-title:hover {
+    color: var(--plex-gold);
+}
+
+.episode-meta {
+    display: flex;
+    gap: 12px;
+    font-size: 13px;
+    color: var(--plex-light);
+}
+
+.episode-air-date {
+    opacity: 0.8;
+}
+
+.episode-rating {
+    color: var(--plex-gold);
+}
+
+.episode-overview {
+    font-size: 14px;
+    line-height: 1.5;
+    color: var(--plex-light);
+    margin: 0;
+    display: -webkit-box;
+    -webkit-line-clamp: 3;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+}
+
+/* Loading spinner for episodes */
+.loading-spinner {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    padding: 40px;
+}
+
+.spinner {
+    width: 40px;
+    height: 40px;
+    border: 3px solid rgba(229, 160, 13, 0.2);
+    border-top-color: var(--plex-gold);
+    border-radius: 50%;
+    animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+    to {
+        transform: rotate(360deg);
+    }
+}
+
 /* Mobile Responsive */
 @media (max-width: 1024px) {
     .banner-content {
@@ -433,6 +543,14 @@
     
     .episodes-grid {
         grid-template-columns: 1fr;
+    }
+    
+    .episode-item-detailed {
+        flex-direction: column;
+    }
+    
+    .episode-still-container {
+        width: 100%;
     }
 }
 

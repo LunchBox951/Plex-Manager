@@ -211,18 +211,32 @@ async def home_page(request: Request, db: Session = Depends(get_db)):
 @app.get("/api/trending/movies")
 async def api_trending_movies(
     time_window: str = "week",
+    page: int = 1,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    """Get trending movies from TMDB with Plex library status."""
-    from src.TMDB import get_or_fetch_trending
+    """Get trending movies from TMDB with Plex library status and pagination."""
+    from src.TMDB import get_trending, download_image
     from src.plex import check_media_exists
     import logging
     logger = logging.getLogger(__name__)
     
     try:
-        # Get cached trending data
-        results = get_or_fetch_trending('movie', time_window)
+        # Get trending data with pagination
+        trending_data = get_trending('movie', time_window, page)
+        results = trending_data.get('results', [])
+        
+        # Download and cache images for each movie
+        for item in results:
+            if item.get('poster_path'):
+                cached_path = download_image(item['poster_path'], 'w500', 'trending')
+                if cached_path:
+                    item['poster_url'] = f"/cache-images/{cached_path}"
+            
+            if item.get('backdrop_path'):
+                cached_path = download_image(item['backdrop_path'], 'w500', 'trending')
+                if cached_path:
+                    item['backdrop_url'] = f"/cache-images/{cached_path}"
         
         # Check Plex library status for each movie
         try:
@@ -240,7 +254,13 @@ async def api_trending_movies(
             for item in results:
                 item['in_library'] = False
         
-        return {"results": results, "time_window": time_window}
+        return {
+            "results": results,
+            "time_window": time_window,
+            "page": trending_data.get('page', page),
+            "total_pages": trending_data.get('total_pages', 1),
+            "total_results": trending_data.get('total_results', len(results))
+        }
         
     except Exception as e:
         logger.error(f"Failed to fetch trending movies: {e}")
@@ -250,18 +270,32 @@ async def api_trending_movies(
 @app.get("/api/trending/tv")
 async def api_trending_tv(
     time_window: str = "week",
+    page: int = 1,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    """Get trending TV shows from TMDB with Plex library status."""
-    from src.TMDB import get_or_fetch_trending
+    """Get trending TV shows from TMDB with Plex library status and pagination."""
+    from src.TMDB import get_trending, download_image
     from src.plex import check_media_exists
     import logging
     logger = logging.getLogger(__name__)
     
     try:
-        # Get cached trending data
-        results = get_or_fetch_trending('tv', time_window)
+        # Get trending data with pagination
+        trending_data = get_trending('tv', time_window, page)
+        results = trending_data.get('results', [])
+        
+        # Download and cache images for each show
+        for item in results:
+            if item.get('poster_path'):
+                cached_path = download_image(item['poster_path'], 'w500', 'trending')
+                if cached_path:
+                    item['poster_url'] = f"/cache-images/{cached_path}"
+            
+            if item.get('backdrop_path'):
+                cached_path = download_image(item['backdrop_path'], 'w500', 'trending')
+                if cached_path:
+                    item['backdrop_url'] = f"/cache-images/{cached_path}"
         
         # Check Plex library status for each show
         try:
@@ -278,6 +312,18 @@ async def api_trending_tv(
             # Continue without library status
             for item in results:
                 item['in_library'] = False
+        
+        return {
+            "results": results,
+            "time_window": time_window,
+            "page": trending_data.get('page', page),
+            "total_pages": trending_data.get('total_pages', 1),
+            "total_results": trending_data.get('total_results', len(results))
+        }
+        
+    except Exception as e:
+        logger.error(f"Failed to fetch trending TV: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
         
         return {"results": results, "time_window": time_window}
         
@@ -431,3 +477,158 @@ async def media_details_page(
         traceback.print_exc()
         return RedirectResponse(url="/home", status_code=302)
 
+
+@app.get("/api/media/{tmdb_id}/status")
+async def get_media_status(
+    tmdb_id: int,
+    media_type: str = "movie",
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Get the current status of a media item.
+    Returns state (unrequested/pending/downloading/processing/verifying/available) and progress.
+    """
+    from src.models import MediaRequest, Download
+    from src.plex import check_media_exists
+    from src.TMDB import get_movie_details, get_tv_details
+    import logging
+    logger = logging.getLogger(__name__)
+    
+    try:
+        # Get media title from TMDB
+        if media_type == 'movie':
+            media_data = get_movie_details(tmdb_id)
+        else:
+            media_data = get_tv_details(tmdb_id)
+        
+        if not media_data:
+            raise HTTPException(status_code=404, detail="Media not found")
+        
+        title = media_data.get('title') or media_data.get('name', '')
+        year = media_data.get('year')
+        
+        # Check if in Plex library
+        plex_check = check_media_exists(title, year, media_type)
+        if plex_check.get('exists', False):
+            return {
+                "state": "available",
+                "progress": 100,
+                "title": title,
+                "in_library": True
+            }
+        
+        # Check if there's a media request
+        media_request = db.query(MediaRequest).filter(
+            MediaRequest.tmdb_id == tmdb_id,
+            MediaRequest.media_type == media_type
+        ).order_by(MediaRequest.requested_at.desc()).first()
+        
+        if not media_request:
+            return {
+                "state": "unrequested",
+                "progress": 0,
+                "title": title,
+                "in_library": False
+            }
+        
+        # Map MediaRequest status to display state
+        status_map = {
+            "pending": "pending",
+            "downloading": "downloading",
+            "processing": "verifying",  # Files being copied/verified
+            "available": "available",
+            "failed": "failed"
+        }
+        
+        state = status_map.get(media_request.status, media_request.status)
+        
+        # Calculate progress from downloads
+        progress = 0
+        if media_request.status == "downloading":
+            downloads = db.query(Download).filter(
+                Download.media_request_id == media_request.id
+            ).all()
+            
+            if downloads:
+                total_progress = sum(d.progress for d in downloads)
+                progress = round(total_progress / len(downloads), 2)
+        elif media_request.status == "processing":
+            progress = 95  # Show near-complete for processing
+        elif media_request.status == "available":
+            progress = 100
+        
+        return {
+            "state": state,
+            "progress": progress,
+            "title": title,
+            "in_library": media_request.status == "available",
+            "status": media_request.status
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to get media status: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/media/{tmdb_id}/season/{season_number}/episodes")
+async def get_season_episodes(
+    tmdb_id: int,
+    season_number: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Get episode details for a specific season with TMDB still images.
+    Returns episode list with numbers, names, overviews, air dates, and still paths.
+    """
+    from src.TMDB import safe_tmdb_call, season_service, download_image
+    import logging
+    logger = logging.getLogger(__name__)
+    
+    try:
+        # Get season details directly from TMDB (includes all episode data)
+        logger.info(f"Fetching season {season_number} details for TMDB ID {tmdb_id}")
+        # Use Season service with details method
+        season_details = safe_tmdb_call(season_service.details, tmdb_id, season_number)
+        
+        if not season_details or not hasattr(season_details, 'episodes'):
+            return {
+                "season_number": season_number,
+                "episodes": []
+            }
+        
+        # Extract episode information and download still images
+        episodes = []
+        for ep in season_details.episodes:
+            still_path = ep.still_path if hasattr(ep, 'still_path') else None
+            
+            # Download still image to cache before returning
+            if still_path:
+                download_image(still_path, size='w185', cache_type='trending')
+            
+            episode_info = {
+                "episode_number": ep.episode_number if hasattr(ep, 'episode_number') else 0,
+                "name": ep.name if hasattr(ep, 'name') else f'Episode {ep.episode_number if hasattr(ep, "episode_number") else 0}',
+                "overview": ep.overview if hasattr(ep, 'overview') else 'No description available.',
+                "air_date": ep.air_date if hasattr(ep, 'air_date') else None,
+                "still_path": still_path,
+                "vote_average": ep.vote_average if hasattr(ep, 'vote_average') else 0
+            }
+            episodes.append(episode_info)
+        
+        return {
+            "season_number": season_number,
+            "episode_count": len(episodes),
+            "episodes": episodes
+        }
+        
+    except Exception as e:
+        logger.error(f"Failed to get season episodes: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))

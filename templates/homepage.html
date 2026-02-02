@@ -5,6 +5,8 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Home - Plex Manager</title>
     <link rel="stylesheet" href="/static/css/homepage.css">
+    <!-- Swiper.js CSS -->
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/swiper@11/swiper-bundle.min.css" />
 </head>
 <body>
     <div class="homepage">
@@ -169,7 +171,7 @@
                     <div class="retention-option-content">
                         <div class="retention-option-title">Watch As Released</div>
                         <div class="retention-option-description">
-                            For TV shows: delete episodes after the next one airs. Keeps your library current.
+                            For TV shows: delete 7 days after watching (once next episode airs). Keeps your library current.
                         </div>
                     </div>
                 </label>
@@ -202,20 +204,58 @@
             setupScrollArrows();
         });
         
-        // Load trending movies
+        // Pagination state
+        const trendingState = {
+            movies: {
+                currentPage: 1,
+                totalPages: 1,
+                loadedPages: new Set(),
+                loading: false,
+                totalItems: 0,
+                cardsCreated: 0
+            },
+            tv: {
+                currentPage: 1,
+                totalPages: 1,
+                loadedPages: new Set(),
+                loading: false,
+                totalItems: 0,
+                cardsCreated: 0
+            }
+        };
+        
+        // Load trending movies with pagination
         async function loadTrendingMovies() {
             const container = document.getElementById('trendingMovies');
-            container.innerHTML = createSkeletonCards(calculateCardCount());
             
             try {
-                const response = await fetch('/api/trending/movies?time_window=week');
+                // First, get page 1 to know total pages
+                const response = await fetch('/api/trending/movies?time_window=week&page=1');
                 const data = await response.json();
                 
-                container.innerHTML = '';
-                data.results.forEach(movie => {
-                    container.appendChild(createMediaCard(movie, 'movie'));
-                });
+                trendingState.movies.totalPages = data.total_pages;
+                trendingState.movies.totalItems = data.total_results;
                 
+                // Create initial skeleton cards (enough for viewport + buffer)
+                const initialCards = Math.min(40, trendingState.movies.totalItems);
+                for (let i = 0; i < initialCards; i++) {
+                    const skeleton = document.createElement('div');
+                    skeleton.className = 'skeleton-card';
+                    skeleton.dataset.index = i;
+                    container.appendChild(skeleton);
+                }
+                trendingState.movies.cardsCreated = initialCards;
+                
+                // Load first page immediately
+                await loadTrendingMoviesPage(1);
+                
+                // Load pages 2 in background
+                if (trendingState.movies.totalPages >= 2) {
+                    setTimeout(() => loadTrendingMoviesPage(2), 100);
+                }
+                
+                // Setup lazy loading on scroll
+                setupLazyLoading(container, 'movies');
                 updateScrollArrows('trendingMovies');
             } catch (error) {
                 console.error('Failed to load trending movies:', error);
@@ -223,25 +263,174 @@
             }
         }
         
-        // Load trending TV shows
-        async function loadTrendingTV() {
-            const container = document.getElementById('trendingTV');
-            container.innerHTML = createSkeletonCards(calculateCardCount());
+        // Load specific page of trending movies
+        async function loadTrendingMoviesPage(page) {
+            if (trendingState.movies.loadedPages.has(page) || trendingState.movies.loading) {
+                return;
+            }
+            
+            trendingState.movies.loading = true;
+            trendingState.movies.loadedPages.add(page);
             
             try {
-                const response = await fetch('/api/trending/tv?time_window=week');
+                const response = await fetch(`/api/trending/movies?time_window=week&page=${page}`);
                 const data = await response.json();
                 
-                container.innerHTML = '';
-                data.results.forEach(show => {
-                    container.appendChild(createMediaCard(show, 'tv'));
-                });
+                const container = document.getElementById('trendingMovies');
+                const startIndex = (page - 1) * 20;
                 
+                // Ensure we have enough skeleton cards for this page
+                ensureCardsExist(container, 'movies', startIndex + data.results.length);
+                
+                // Replace skeleton cards with real cards
+                data.results.forEach((movie, index) => {
+                    const cardIndex = startIndex + index;
+                    const skeleton = container.querySelector(`[data-index="${cardIndex}"]`);
+                    if (skeleton && skeleton.classList.contains('skeleton-card')) {
+                        const card = createMediaCard(movie, 'movie');
+                        card.dataset.index = cardIndex;
+                        skeleton.replaceWith(card);
+                    }
+                });
+            } catch (error) {
+                console.error(`Failed to load movies page ${page}:`, error);
+                trendingState.movies.loadedPages.delete(page);
+            } finally {
+                trendingState.movies.loading = false;
+            }
+        }
+        
+        // Load trending TV shows with pagination
+        async function loadTrendingTV() {
+            const container = document.getElementById('trendingTV');
+            
+            try {
+                // First, get page 1 to know total pages
+                const response = await fetch('/api/trending/tv?time_window=week&page=1');
+                const data = await response.json();
+                
+                trendingState.tv.totalPages = data.total_pages;
+                trendingState.tv.totalItems = data.total_results;
+                
+                // Create initial skeleton cards (enough for viewport + buffer)
+                const initialCards = Math.min(40, trendingState.tv.totalItems);
+                for (let i = 0; i < initialCards; i++) {
+                    const skeleton = document.createElement('div');
+                    skeleton.className = 'skeleton-card';
+                    skeleton.dataset.index = i;
+                    container.appendChild(skeleton);
+                }
+                trendingState.tv.cardsCreated = initialCards;
+                
+                // Load first page immediately
+                await loadTrendingTVPage(1);
+                
+                // Load page 2 in background
+                if (trendingState.tv.totalPages >= 2) {
+                    setTimeout(() => loadTrendingTVPage(2), 100);
+                }
+                
+                // Setup lazy loading on scroll
+                setupLazyLoading(container, 'tv');
                 updateScrollArrows('trendingTV');
             } catch (error) {
                 console.error('Failed to load trending TV:', error);
                 container.innerHTML = '<p style="color: var(--plex-light); padding: 20px;">Failed to load trending TV shows</p>';
             }
+        }
+        
+        // Load specific page of trending TV
+        async function loadTrendingTVPage(page) {
+            if (trendingState.tv.loadedPages.has(page) || trendingState.tv.loading) {
+                return;
+            }
+            
+            trendingState.tv.loading = true;
+            trendingState.tv.loadedPages.add(page);
+            
+            try {
+                const response = await fetch(`/api/trending/tv?time_window=week&page=${page}`);
+                const data = await response.json();
+                
+                const container = document.getElementById('trendingTV');
+                const startIndex = (page - 1) * 20;
+                
+                // Ensure we have enough skeleton cards for this page
+                ensureCardsExist(container, 'tv', startIndex + data.results.length);
+                
+                // Replace skeleton cards with real cards
+                data.results.forEach((show, index) => {
+                    const cardIndex = startIndex + index;
+                    const skeleton = container.querySelector(`[data-index="${cardIndex}"]`);
+                    if (skeleton && skeleton.classList.contains('skeleton-card')) {
+                        const card = createMediaCard(show, 'tv');
+                        card.dataset.index = cardIndex;
+                        skeleton.replaceWith(card);
+                    }
+                });
+            } catch (error) {
+                console.error(`Failed to load TV page ${page}:`, error);
+                trendingState.tv.loadedPages.delete(page);
+            } finally {
+                trendingState.tv.loading = false;
+            }
+        }
+        
+        // Ensure enough cards exist in the container
+        function ensureCardsExist(container, mediaType, neededCount) {
+            const state = trendingState[mediaType];
+            const maxCards = Math.min(state.totalItems, state.totalPages * 20);
+            
+            while (state.cardsCreated < neededCount && state.cardsCreated < maxCards) {
+                const skeleton = document.createElement('div');
+                skeleton.className = 'skeleton-card';
+                skeleton.dataset.index = state.cardsCreated;
+                container.appendChild(skeleton);
+                state.cardsCreated++;
+            }
+        }
+        
+        // Setup lazy loading on scroll
+        function setupLazyLoading(container, mediaType) {
+            let scrollTimeout;
+            
+            container.addEventListener('scroll', () => {
+                // Debounce scroll events for better performance
+                if (scrollTimeout) clearTimeout(scrollTimeout);
+                
+                scrollTimeout = setTimeout(() => {
+                    const scrollPosition = container.scrollLeft;
+                    const containerWidth = container.clientWidth;
+                    const scrollWidth = container.scrollWidth;
+                    
+                    // Calculate which page we're viewing based on scroll position
+                    const cardWidth = parseInt(getComputedStyle(document.documentElement).getPropertyValue('--card-width'));
+                    const gap = parseInt(getComputedStyle(document.documentElement).getPropertyValue('--card-gap'));
+                    const itemWidth = cardWidth + gap;
+                    const currentItem = Math.floor(scrollPosition / itemWidth);
+                    const currentPage = Math.floor(currentItem / 20) + 1;
+                    
+                    const state = trendingState[mediaType];
+                    const loadPage = mediaType === 'movies' ? loadTrendingMoviesPage : loadTrendingTVPage;
+                    
+                    // Ensure we have cards for upcoming content (add buffer of 30 cards ahead)
+                    const bufferIndex = currentItem + 30;
+                    ensureCardsExist(container, mediaType, bufferIndex);
+                    
+                    // Load current page if not loaded
+                    if (!state.loadedPages.has(currentPage) && currentPage <= state.totalPages) {
+                        loadPage(currentPage);
+                    }
+                    
+                    // Load next page if we're getting close and it's not loaded
+                    if (!state.loadedPages.has(currentPage + 1) && currentPage + 1 <= state.totalPages) {
+                        const itemsUntilNextPage = ((currentPage * 20) - currentItem);
+                        if (itemsUntilNextPage < 10) {
+                            loadPage(currentPage + 1);
+                        }
+                    }
+                }, 100); // 100ms debounce
+            });
         }
         
         // Calculate number of skeleton cards based on viewport
@@ -261,32 +450,173 @@
             return html;
         }
         
+        // Status cache for media cards (30 second TTL)
+        const statusCache = new Map();
+        const STATUS_CACHE_TTL = 30000; // 30 seconds
+        
         // Create media card element
         function createMediaCard(media, mediaType) {
             const card = document.createElement('div');
-            card.className = 'media-card';
-            card.setAttribute('data-tmdb-id', media.tmdb_id || media.id);
+            card.className = 'media-card skeleton-card'; // Start with skeleton appearance
+            const tmdbId = media.tmdb_id || media.id;
+            card.setAttribute('data-tmdb-id', tmdbId);
             card.setAttribute('data-media-type', mediaType);
             
             const title = media.title || media.name;
             const year = media.year || (media.release_date ? new Date(media.release_date).getFullYear() : '') || (media.first_air_date ? new Date(media.first_air_date).getFullYear() : '');
             const posterUrl = media.poster_url || (media.poster_path ? `/cache-images/w500${media.poster_path}` : '/static/img/placeholder.jpg');
             
+            const overlayButtonId = `overlay-btn-${tmdbId}-${mediaType}`;
+            
+            // Create image and wait for it to load before showing the card
+            const img = new Image();
+            img.className = 'media-card-poster';
+            img.alt = title;
+            img.style.display = 'none'; // Hide until loaded
+            
+            img.onload = function() {
+                // Image loaded, remove skeleton and show content
+                card.classList.remove('skeleton-card');
+                img.style.display = '';
+            };
+            
+            img.onerror = function() {
+                this.src = '/static/img/placeholder.jpg';
+                card.classList.remove('skeleton-card');
+                img.style.display = '';
+            };
+            
+            img.src = posterUrl;
+            
             card.innerHTML = `
-                <img src="${posterUrl}" alt="${title}" class="media-card-poster" onerror="this.src='/static/img/placeholder.jpg'">
                 ${media.in_library ? '<div class="library-badge">In Library</div>' : ''}
                 <div class="media-card-overlay">
                     <h3 class="media-card-title">${title}</h3>
                     ${year ? `<p class="media-card-year">${year}</p>` : ''}
-                    ${!media.in_library ? `<button class="quick-request-btn" onclick="event.stopPropagation(); openQuickRequest(${media.tmdb_id || media.id}, '${mediaType}', '${title.replace(/'/g, "\\'")}')">Quick Request</button>` : ''}
+                    <div id="${overlayButtonId}" class="overlay-action">
+                        ${!media.in_library ? `<button class="quick-request-btn" onclick="event.stopPropagation(); openQuickRequest(${tmdbId}, '${mediaType}', '${title.replace(/'/g, "\\'")}')">Request</button>` : ''}
+                    </div>
                 </div>
             `;
             
-            card.addEventListener('click', function() {
-                window.location.href = `/media/${mediaType}/${media.tmdb_id || media.id}`;
+            // Insert the image at the beginning
+            card.insertBefore(img, card.firstChild);
+            
+            // Add hover handler for status checking
+            let hoverTimeout;
+            card.addEventListener('mouseenter', function() {
+                // Delay status check slightly to avoid excessive API calls
+                hoverTimeout = setTimeout(() => {
+                    updateCardStatus(tmdbId, mediaType, overlayButtonId);
+                }, 200);
+            });
+            
+            card.addEventListener('mouseleave', function() {
+                if (hoverTimeout) clearTimeout(hoverTimeout);
+            });
+            
+            // Mobile: tap to toggle overlay, second tap to navigate
+            let lastTap = 0;
+            card.addEventListener('touchend', function(e) {
+                const now = Date.now();
+                const timeDiff = now - lastTap;
+                
+                if (timeDiff < 500 && timeDiff > 0) {
+                    // Double tap - navigate
+                    window.location.href = `/media/${mediaType}/${tmdbId}`;
+                } else {
+                    // Single tap - toggle overlay
+                    e.preventDefault();
+                    card.classList.toggle('force-hover');
+                    updateCardStatus(tmdbId, mediaType, overlayButtonId);
+                }
+                lastTap = now;
+            });
+            
+            // Desktop: click to navigate
+            card.addEventListener('click', function(e) {
+                // Only navigate if not on mobile (no force-hover class)
+                if (!card.classList.contains('force-hover')) {
+                    window.location.href = `/media/${mediaType}/${tmdbId}`;
+                }
             });
             
             return card;
+        }
+        
+        // Update card status based on API response
+        async function updateCardStatus(tmdbId, mediaType, buttonId) {
+            const cacheKey = `${tmdbId}-${mediaType}`;
+            const now = Date.now();
+            
+            // Check cache
+            if (statusCache.has(cacheKey)) {
+                const cached = statusCache.get(cacheKey);
+                if (now - cached.timestamp < STATUS_CACHE_TTL) {
+                    renderCardStatus(buttonId, cached.data);
+                    return;
+                }
+            }
+            
+            try {
+                const response = await fetch(`/api/media/${tmdbId}/status?media_type=${mediaType}`);
+                const data = await response.json();
+                
+                // Cache the result
+                statusCache.set(cacheKey, {
+                    data: data,
+                    timestamp: now
+                });
+                
+                renderCardStatus(buttonId, data);
+                
+                // If downloading, poll for updates
+                if (data.state === 'downloading' || data.state === 'pending' || data.state === 'verifying') {
+                    setTimeout(() => {
+                        statusCache.delete(cacheKey); // Invalidate cache
+                        updateCardStatus(tmdbId, mediaType, buttonId);
+                    }, 10000); // Poll every 10 seconds for active downloads
+                }
+            } catch (error) {
+                console.error('Failed to fetch media status:', error);
+            }
+        }
+        
+        // Render card status in overlay
+        function renderCardStatus(buttonId, status) {
+            const button = document.getElementById(buttonId);
+            if (!button) return;
+            
+            let html = '';
+            
+            switch (status.state) {
+                case 'unrequested':
+                    html = `<button class="quick-request-btn" onclick="event.stopPropagation(); openQuickRequest(${button.closest('.media-card').dataset.tmdbId}, '${button.closest('.media-card').dataset.mediaType}', '${status.title.replace(/'/g, "\\'")}')">Request</button>`;
+                    break;
+                case 'pending':
+                    html = '<div class="status-indicator">Processing</div>';
+                    break;
+                case 'downloading':
+                    html = `
+                        <div class="status-indicator">Downloading</div>
+                        <div class="progress-bar-container">
+                            <div class="progress-bar-fill" style="width: ${status.progress}%"></div>
+                            <div class="progress-bar-text">${status.progress}%</div>
+                        </div>
+                    `;
+                    break;
+                case 'verifying':
+                    html = '<div class="status-indicator">Verifying</div>';
+                    break;
+                case 'available':
+                    html = '<div class="status-indicator available">✓ Available</div>';
+                    break;
+                case 'failed':
+                    html = '<div class="status-indicator failed">✗ Failed</div>';
+                    break;
+            }
+            
+            button.innerHTML = html;
         }
         
         // Setup search functionality
@@ -570,10 +900,14 @@
                     updateScrollArrows(this.id);
                 });
                 
-                // Support mouse drag scrolling for desktop
+                // Support mouse drag scrolling with momentum
                 let isDown = false;
                 let startX;
                 let scrollLeft;
+                let velocity = 0;
+                let lastX = 0;
+                let lastTime = 0;
+                let momentumFrame = null;
                 
                 row.addEventListener('mousedown', (e) => {
                     isDown = true;
@@ -581,39 +915,133 @@
                     row.style.userSelect = 'none';
                     startX = e.pageX - row.offsetLeft;
                     scrollLeft = row.scrollLeft;
+                    lastX = e.pageX;
+                    lastTime = Date.now();
+                    velocity = 0;
+                    
+                    // Cancel any ongoing momentum
+                    if (momentumFrame) {
+                        cancelAnimationFrame(momentumFrame);
+                        momentumFrame = null;
+                    }
                 });
                 
                 row.addEventListener('mouseleave', () => {
-                    isDown = false;
-                    row.style.cursor = 'grab';
+                    if (isDown) {
+                        isDown = false;
+                        row.style.cursor = 'grab';
+                        applyMomentum(row);
+                    }
                 });
                 
                 row.addEventListener('mouseup', () => {
-                    isDown = false;
-                    row.style.cursor = 'grab';
+                    if (isDown) {
+                        isDown = false;
+                        row.style.cursor = 'grab';
+                        applyMomentum(row);
+                    }
                 });
                 
                 row.addEventListener('mousemove', (e) => {
                     if (!isDown) return;
                     e.preventDefault();
-                    const x = e.pageX - row.offsetLeft;
-                    const walk = (x - startX) * 2;
+                    
+                    const currentTime = Date.now();
+                    const currentX = e.pageX;
+                    const timeDiff = currentTime - lastTime;
+                    
+                    if (timeDiff > 0) {
+                        // Calculate velocity
+                        velocity = (currentX - lastX) / timeDiff;
+                    }
+                    
+                    const x = currentX - row.offsetLeft;
+                    const walk = (x - startX) * 1.5;
                     row.scrollLeft = scrollLeft - walk;
+                    
+                    lastX = currentX;
+                    lastTime = currentTime;
                 });
+                
+                // Apply momentum after drag ends
+                function applyMomentum(element) {
+                    const friction = 0.95; // Friction coefficient
+                    const minVelocity = 0.1; // Minimum velocity threshold
+                    
+                    function momentum() {
+                        if (Math.abs(velocity) > minVelocity) {
+                            element.scrollLeft -= velocity * 10;
+                            velocity *= friction;
+                            momentumFrame = requestAnimationFrame(momentum);
+                        } else {
+                            // Lock when momentum stops
+                            velocity = 0;
+                            momentumFrame = null;
+                        }
+                    }
+                    
+                    if (Math.abs(velocity) > minVelocity) {
+                        momentum();
+                    }
+                }
                 
                 // Support touch gestures for mobile
                 let touchStartX = 0;
                 let touchScrollLeft = 0;
+                let touchVelocity = 0;
+                let touchLastX = 0;
+                let touchLastTime = 0;
                 
                 row.addEventListener('touchstart', function(e) {
                     touchStartX = e.touches[0].pageX;
                     touchScrollLeft = row.scrollLeft;
+                    touchLastX = e.touches[0].pageX;
+                    touchLastTime = Date.now();
+                    touchVelocity = 0;
+                    
+                    // Cancel any ongoing momentum
+                    if (momentumFrame) {
+                        cancelAnimationFrame(momentumFrame);
+                        momentumFrame = null;
+                    }
                 });
                 
                 row.addEventListener('touchmove', function(e) {
-                    const x = e.touches[0].pageX;
-                    const walk = (touchStartX - x) * 2;
+                    const currentTime = Date.now();
+                    const currentX = e.touches[0].pageX;
+                    const timeDiff = currentTime - touchLastTime;
+                    
+                    if (timeDiff > 0) {
+                        touchVelocity = (touchLastX - currentX) / timeDiff;
+                    }
+                    
+                    const x = currentX;
+                    const walk = (touchStartX - x) * 1.5;
                     row.scrollLeft = touchScrollLeft + walk;
+                    
+                    touchLastX = currentX;
+                    touchLastTime = currentTime;
+                });
+                
+                row.addEventListener('touchend', function() {
+                    // Apply momentum for touch
+                    const friction = 0.95;
+                    const minVelocity = 0.1;
+                    
+                    function touchMomentum() {
+                        if (Math.abs(touchVelocity) > minVelocity) {
+                            row.scrollLeft += touchVelocity * 10;
+                            touchVelocity *= friction;
+                            momentumFrame = requestAnimationFrame(touchMomentum);
+                        } else {
+                            touchVelocity = 0;
+                            momentumFrame = null;
+                        }
+                    }
+                    
+                    if (Math.abs(touchVelocity) > minVelocity) {
+                        touchMomentum();
+                    }
                 });
                 
                 // Set initial cursor
@@ -652,5 +1080,8 @@
             window.location.href = '/';
         }
     </script>
+    
+    <!-- Swiper.js JS -->
+    <script src="https://cdn.jsdelivr.net/npm/swiper@11/swiper-bundle.min.js"></script>
 </body>
 </html>

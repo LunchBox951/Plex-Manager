@@ -291,16 +291,20 @@ body {
 }
 
 .media-row {
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(var(--card-width), 1fr));
+    display: flex;
     gap: var(--card-gap);
     overflow-x: auto;
     overflow-y: hidden;
-    scroll-snap-type: x proximity;
+    scroll-snap-type: x mandatory;
     scrollbar-width: thin;
     scrollbar-color: var(--plex-dark) transparent;
     padding: 10px 0;
     -webkit-overflow-scrolling: touch;
+}
+
+.media-row .media-card {
+    flex: 0 0 var(--card-width);
+    scroll-snap-align: start;
 }
 
 .media-row::-webkit-scrollbar {
@@ -450,6 +454,8 @@ body {
 
 /* Skeleton loaders */
 .skeleton-card {
+    flex: 0 0 var(--card-width);
+    width: var(--card-width);
     aspect-ratio: 2 / 3;
     background: linear-gradient(
         90deg,
@@ -460,6 +466,26 @@ body {
     background-size: 200% 100%;
     animation: shimmer 1.5s infinite;
     border-radius: var(--border-radius);
+    position: relative;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+/* Hide overlay and badge while skeleton is loading */
+.skeleton-card .media-card-overlay,
+.skeleton-card .library-badge {
+    display: none;
+}
+
+.skeleton-card::after {
+    content: '';
+    width: 40px;
+    height: 40px;
+    border: 3px solid rgba(229, 160, 13, 0.2);
+    border-top-color: var(--plex-gold);
+    border-radius: 50%;
+    animation: spin 1s linear infinite;
 }
 
 @keyframes shimmer {
@@ -785,6 +811,67 @@ body {
     color: var(--plex-light);
     max-width: 400px;
     line-height: 1.4;
+}
+
+/* Status indicators and progress bars */
+.overlay-action {
+    width: 100%;
+}
+
+.status-indicator {
+    padding: 8px 16px;
+    background: rgba(0, 0, 0, 0.7);
+    border-radius: 4px;
+    font-size: 14px;
+    font-weight: bold;
+    text-align: center;
+    color: var(--plex-gold);
+}
+
+.status-indicator.available {
+    color: #4CAF50;
+}
+
+.status-indicator.failed {
+    color: #f44336;
+}
+
+.progress-bar-container {
+    position: relative;
+    width: 100%;
+    height: 24px;
+    background: rgba(0, 0, 0, 0.7);
+    border-radius: 4px;
+    overflow: hidden;
+    margin-top: 8px;
+}
+
+.progress-bar-fill {
+    position: absolute;
+    left: 0;
+    top: 0;
+    height: 100%;
+    background: linear-gradient(90deg, var(--plex-gold), #ffd700);
+    transition: width 0.3s ease;
+}
+
+.progress-bar-text {
+    position: absolute;
+    width: 100%;
+    height: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 12px;
+    font-weight: bold;
+    color: white;
+    text-shadow: 0 1px 2px rgba(0, 0, 0, 0.8);
+    z-index: 1;
+}
+
+/* Mobile tap-to-hover support */
+.media-card.force-hover .media-card-overlay {
+    opacity: 1;
 }
 
 /* Mobile responsive adjustments */
