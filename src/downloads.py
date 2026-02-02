@@ -985,6 +985,28 @@ async def request_media_unified(
         # ====================================================================
         
         logger.info("[Step 4/9] Creating MediaRequest record...")
+        
+        # Determine if we should track upcoming episodes
+        track_upcoming = False
+        if request.media_type == 'tv':
+            if request.seasons is None:
+                # Requesting entire show - track upcoming episodes
+                track_upcoming = True
+                logger.info("Tracking upcoming episodes: entire show requested")
+            else:
+                # Check if requesting the latest ongoing season
+                from src.models import TMDBSeasonCache
+                ongoing_seasons = db.query(TMDBSeasonCache).filter(
+                    TMDBSeasonCache.tmdb_id == request.tmdb_id,
+                    TMDBSeasonCache.season_status == 'ongoing'
+                ).all()
+                
+                if ongoing_seasons:
+                    highest_ongoing = max(s.season_number for s in ongoing_seasons)
+                    if highest_ongoing in seasons_to_request:
+                        track_upcoming = True
+                        logger.info(f"Tracking upcoming episodes: latest ongoing season {highest_ongoing} requested")
+        
         media_request = MediaRequest(
             user_id=current_user.id,
             tmdb_id=request.tmdb_id,
@@ -993,7 +1015,9 @@ async def request_media_unified(
             year=year,
             retention_type=request.retention_type,
             status='pending',  # Start as pending until downloads are added
-            requested_at=datetime.utcnow()
+            requested_at=datetime.utcnow(),
+            requested_seasons=json.dumps(request.seasons) if request.seasons else None,
+            track_upcoming=1 if track_upcoming else 0
         )
         
         db.add(media_request)

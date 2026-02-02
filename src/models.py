@@ -95,6 +95,12 @@ class Download(Base):
     # Foreign key for media request integration
     media_request_id = Column(Integer, ForeignKey('media_requests.id'), nullable=True, index=True)
     
+    # Retry tracking fields
+    retry_count = Column(Integer, default=0)  # Number of retry attempts
+    torrent_attempt = Column(Integer, default=1)  # Which torrent from scored list (1st, 2nd, 3rd choice)
+    next_check_at = Column(DateTime, nullable=True)  # Scheduled time for next retry
+    scored_torrents_json = Column(Text, nullable=True)  # JSON array of scored torrents for fallback selection
+    
     def to_dict(self):
         """Convert download to dictionary for JSON serialization."""
         return {
@@ -186,6 +192,10 @@ class MediaRequest(Base):
     media_type = Column(String, nullable=False)  # movie or tv
     title = Column(String, nullable=False)  # Media title for display
     year = Column(Integer, nullable=True)  # Release year
+    
+    # Calendar tracking for TV shows
+    requested_seasons = Column(Text, nullable=True)  # JSON array of requested season numbers, null = entire show
+    track_upcoming = Column(Integer, default=0)  # Boolean: 1 = track future episodes, 0 = don't track
     
     # Retention policy
     retention_type = Column(String, nullable=False, default="watch_once")  # forever, watch_once, watch_as_released

@@ -901,6 +901,447 @@ async def cleanup_expired_cache():
         logger.error(f"Error cleaning up cache: {e}")
 
 
+async def nightly_episode_check():
+    """
+    Nightly task running at 2 AM to:
+    1. Retry failed/pending downloads (with retry_count < 5)
+    2. Search for newly released episodes (aired yesterday) on tracked shows
+    
+    This consolidates retry logic and new episode detection in one job.
+    """
+    from src.models import TMDBSeasonCache, SeasonRequest
+    from src.TMDB import season_service, safe_tmdb_call
+    from src.prowlarr import get_prowlarr_client, CATEGORY_TV
+    from src.scoring import rank_torrents, select_best_torrent
+    from src.qbittorrent import get_qbittorrent_client, QBittorrentClient
+    from src.torrent_validator import validate_torrent_files
+    import time
+    
+    db = SessionLocal()
+    logger.info("[NIGHTLY CHECK] Starting 2 AM episode check...")
+    
+    try:
+        yesterday = (datetime.utcnow() - timedelta(days=1)).date()
+        today = datetime.utcnow().date()
+        
+        # ====================================================================
+        # Part 1: Retry Failed/Pending Downloads
+        # ====================================================================
+        
+        logger.info("[NIGHTLY CHECK] Part 1: Retrying failed/pending downloads...")
+        
+        retry_downloads = db.query(Download).filter(
+            Download.status.in_(['failed', 'pending']),
+            Download.retry_count < 5
+        ).all()
+        
+        logger.info(f"Found {len(retry_downloads)} downloads eligible for retry")
+        
+        for download in retry_downloads:
+            try:
+                # Get associated MediaRequest for title info
+                media_request = db.query(MediaRequest).filter(
+                    MediaRequest.id == download.media_request_id
+                ).first()
+                
+                if not media_request:
+                    logger.warning(f"Download {download.id} has no associated MediaRequest, skipping")
+                    continue
+                
+                logger.info(f"Retrying download {download.id}: {media_request.title} (attempt {download.retry_count + 1}/5)")
+                
+                # Build search query
+                if download.media_type == 'movie':
+                    query = f"{media_request.title} {media_request.year}"
+                    category = CATEGORY_TV  # Should be CATEGORY_MOVIES but using TV for now
+                else:
+                    if download.season and download.episodes:
+                        # Individual episode(s)
+                        episodes_list = json.loads(download.episodes)
+                        if len(episodes_list) == 1:
+                            query = f"{media_request.title} S{download.season:02d}E{episodes_list[0]:02d}"
+                        else:
+                            query = f"{media_request.title} S{download.season:02d}"
+                    elif download.season:
+                        # Full season
+                        query = f"{media_request.title} S{download.season:02d}"
+                    else:
+                        # Entire show
+                        query = media_request.title
+                    
+                    category = CATEGORY_TV
+                
+                # Search Prowlarr
+                prowlarr = get_prowlarr_client()
+                torrents = prowlarr.search(query, category)
+                
+                if not torrents:
+                    logger.info(f"No torrents found for retry, incrementing retry count")
+                    download.retry_count += 1
+                    download.next_check_at = datetime.utcnow() + timedelta(days=1)
+                    db.commit()
+                    continue
+                
+                # Get failed hashes to exclude
+                failed_hashes = {d.torrent_hash.lower() for d in db.query(Download).filter(
+                    Download.status.in_(['failed', 'partial_failed'])
+                ).all()}
+                
+                # Score torrents
+                qb = get_qbittorrent_client()
+                scored_torrents = rank_torrents(
+                    torrents=torrents,
+                    failed_hashes=failed_hashes,
+                    tmdb_id=download.tmdb_id if download.media_type == 'tv' else None,
+                    season_number=download.season,
+                    requested_episodes=json.loads(download.episodes) if download.episodes else None,
+                    db_session=db,
+                    qb_client=qb
+                )
+                
+                if not scored_torrents:
+                    logger.info(f"No suitable torrents after filtering, incrementing retry count")
+                    download.retry_count += 1
+                    download.next_check_at = datetime.utcnow() + timedelta(days=1)
+                    db.commit()
+                    continue
+                
+                # Select best torrent
+                best_torrent = select_best_torrent(scored_torrents)
+                
+                if not best_torrent:
+                    logger.info(f"No torrents meet quality requirements, incrementing retry count")
+                    download.retry_count += 1
+                    download.next_check_at = datetime.utcnow() + timedelta(days=1)
+                    db.commit()
+                    continue
+                
+                # Extract info hash
+                info_hash = QBittorrentClient.extract_info_hash(best_torrent.torrent.magnet_link)
+                if not info_hash:
+                    logger.error(f"Could not extract info hash from magnet")
+                    download.retry_count += 1
+                    db.commit()
+                    continue
+                
+                # Check if already downloading
+                existing = db.query(Download).filter(
+                    Download.torrent_hash == info_hash,
+                    Download.id != download.id
+                ).first()
+                
+                if existing:
+                    logger.info(f"Torrent already exists as download {existing.id}, marking original as failed")
+                    download.status = 'failed'
+                    download.failed_reason = f"Duplicate of download {existing.id}"
+                    db.commit()
+                    continue
+                
+                # Delete old torrent from qBittorrent if it exists
+                if download.torrent_hash:
+                    try:
+                        qb.delete_torrent(download.torrent_hash, delete_files=True)
+                        logger.info(f"Deleted old torrent {download.torrent_hash}")
+                    except:
+                        pass
+                
+                # Add new torrent to qBittorrent
+                category = download.media_type
+                save_path = os.getenv('DOWNLOADS_PATH', 'C:\\downloads')
+                
+                success = qb.add_magnet(
+                    magnet_uri=best_torrent.torrent.magnet_link,
+                    category=category,
+                    save_path=save_path
+                )
+                
+                if not success:
+                    logger.error(f"qBittorrent failed to add magnet")
+                    download.retry_count += 1
+                    download.next_check_at = datetime.utcnow() + timedelta(days=1)
+                    db.commit()
+                    continue
+                
+                # Wait for metadata
+                time.sleep(2)
+                
+                # Get torrent info
+                torrent_info = qb.get_torrent_info(info_hash)
+                if not torrent_info:
+                    logger.error(f"Failed to retrieve torrent info")
+                    qb.delete_torrent(info_hash, delete_files=True)
+                    download.retry_count += 1
+                    db.commit()
+                    continue
+                
+                files = qb.get_torrent_files(info_hash)
+                if not files:
+                    logger.error(f"No files found in torrent")
+                    qb.delete_torrent(info_hash, delete_files=True)
+                    download.retry_count += 1
+                    db.commit()
+                    continue
+                
+                # Validate files
+                validation = validate_torrent_files(files)
+                if not validation.valid:
+                    logger.error(f"Torrent validation failed: {validation.reason}")
+                    qb.delete_torrent(info_hash, delete_files=True)
+                    download.retry_count += 1
+                    db.commit()
+                    continue
+                
+                # Update download record with new torrent
+                download.torrent_hash = info_hash
+                download.magnet_link = best_torrent.torrent.magnet_link
+                download.status = 'downloading'
+                download.progress = 0.0
+                download.retry_count += 1
+                download.torrent_attempt = download.torrent_attempt + 1 if download.torrent_attempt else 2
+                download.failed_reason = None
+                download.failed_at = None
+                download.metadata_json = json.dumps({
+                    'name': torrent_info.get('name'),
+                    'size': torrent_info.get('size'),
+                    'num_files': len(files),
+                    'indexer': best_torrent.torrent.indexer,
+                    'score': best_torrent.final_score,
+                    'retry': download.retry_count
+                })
+                
+                db.commit()
+                logger.info(f"✓ Successfully retried download {download.id} with new torrent")
+                
+            except Exception as e:
+                logger.error(f"Error retrying download {download.id}: {e}")
+                download.retry_count += 1
+                download.next_check_at = datetime.utcnow() + timedelta(days=1)
+                db.commit()
+        
+        # ====================================================================
+        # Part 2: Check for New Episode Releases
+        # ====================================================================
+        
+        logger.info("[NIGHTLY CHECK] Part 2: Checking for new episode releases...")
+        
+        # Get all tracked shows (track_upcoming = 1)
+        tracked_requests = db.query(MediaRequest).filter(
+            MediaRequest.media_type == 'tv',
+            MediaRequest.track_upcoming == 1,
+            MediaRequest.status != 'deleted'
+        ).all()
+        
+        logger.info(f"Found {len(tracked_requests)} TV shows with upcoming episode tracking enabled")
+        
+        for media_request in tracked_requests:
+            try:
+                logger.info(f"Checking {media_request.title} for new episodes...")
+                
+                # Get ongoing seasons for this show
+                ongoing_seasons = db.query(TMDBSeasonCache).filter(
+                    TMDBSeasonCache.tmdb_id == media_request.tmdb_id,
+                    TMDBSeasonCache.season_status == 'ongoing'
+                ).all()
+                
+                if not ongoing_seasons:
+                    logger.info(f"No ongoing seasons found for {media_request.title}")
+                    continue
+                
+                for season_cache in ongoing_seasons:
+                    logger.info(f"Checking Season {season_cache.season_number}...")
+                    
+                    # Fetch episode details from TMDB
+                    season_details = safe_tmdb_call(
+                        season_service.details,
+                        media_request.tmdb_id,
+                        season_cache.season_number
+                    )
+                    
+                    if not season_details or not hasattr(season_details, 'episodes'):
+                        logger.warning(f"Could not fetch season details")
+                        continue
+                    
+                    # Check each episode
+                    for episode in season_details.episodes:
+                        if not hasattr(episode, 'air_date') or not episode.air_date:
+                            continue
+                        
+                        try:
+                            ep_air_date = datetime.strptime(episode.air_date, '%Y-%m-%d').date()
+                        except:
+                            continue
+                        
+                        # Check if episode aired yesterday
+                        if ep_air_date != yesterday:
+                            continue
+                        
+                        episode_num = episode.episode_number
+                        logger.info(f"Found episode aired yesterday: S{season_cache.season_number:02d}E{episode_num:02d}")
+                        
+                        # Check if already requested (look for existing SeasonRequest)
+                        existing_season_request = db.query(SeasonRequest).join(Download).filter(
+                            Download.media_request_id == media_request.id,
+                            SeasonRequest.season_number == season_cache.season_number,
+                            SeasonRequest.episode_numbers.like(f'%{episode_num}%')
+                        ).first()
+                        
+                        if existing_season_request:
+                            logger.info(f"Episode already requested, skipping")
+                            continue
+                        
+                        logger.info(f"Requesting new episode: {media_request.title} S{season_cache.season_number:02d}E{episode_num:02d}")
+                        
+                        try:
+                            # Build search query
+                            query = f"{media_request.title} S{season_cache.season_number:02d}E{episode_num:02d}"
+                            
+                            # Search Prowlarr
+                            prowlarr = get_prowlarr_client()
+                            torrents = prowlarr.search(query, CATEGORY_TV)
+                            
+                            if not torrents:
+                                logger.info(f"No torrents found yet for this episode")
+                                continue
+                            
+                            # Get failed hashes
+                            failed_hashes = {d.torrent_hash.lower() for d in db.query(Download).filter(
+                                Download.status.in_(['failed', 'partial_failed'])
+                            ).all()}
+                            
+                            # Score torrents
+                            qb = get_qbittorrent_client()
+                            scored_torrents = rank_torrents(
+                                torrents=torrents,
+                                failed_hashes=failed_hashes,
+                                tmdb_id=media_request.tmdb_id,
+                                season_number=season_cache.season_number,
+                                requested_episodes=[episode_num],
+                                db_session=db,
+                                qb_client=qb
+                            )
+                            
+                            if not scored_torrents:
+                                logger.info(f"No suitable torrents after filtering")
+                                continue
+                            
+                            best_torrent = select_best_torrent(scored_torrents)
+                            
+                            if not best_torrent:
+                                logger.info(f"No torrents meet quality requirements")
+                                continue
+                            
+                            # Extract info hash
+                            info_hash = QBittorrentClient.extract_info_hash(best_torrent.torrent.magnet_link)
+                            if not info_hash:
+                                logger.error(f"Could not extract info hash")
+                                continue
+                            
+                            # Check for duplicates
+                            existing_download = db.query(Download).filter(
+                                Download.torrent_hash == info_hash
+                            ).first()
+                            
+                            if existing_download:
+                                logger.info(f"Torrent already downloading as {existing_download.id}")
+                                continue
+                            
+                            # Add to qBittorrent
+                            category = 'tv'
+                            save_path = os.getenv('DOWNLOADS_PATH', 'C:\\downloads')
+                            
+                            success = qb.add_magnet(
+                                magnet_uri=best_torrent.torrent.magnet_link,
+                                category=category,
+                                save_path=save_path
+                            )
+                            
+                            if not success:
+                                logger.error(f"qBittorrent failed to add magnet")
+                                continue
+                            
+                            # Wait for metadata
+                            time.sleep(2)
+                            
+                            # Get torrent info
+                            torrent_info = qb.get_torrent_info(info_hash)
+                            if not torrent_info:
+                                logger.error(f"Failed to retrieve torrent info")
+                                qb.delete_torrent(info_hash, delete_files=True)
+                                continue
+                            
+                            files = qb.get_torrent_files(info_hash)
+                            if not files:
+                                logger.error(f"No files found in torrent")
+                                qb.delete_torrent(info_hash, delete_files=True)
+                                continue
+                            
+                            # Validate files
+                            validation = validate_torrent_files(files)
+                            if not validation.valid:
+                                logger.error(f"Torrent validation failed: {validation.reason}")
+                                qb.delete_torrent(info_hash, delete_files=True)
+                                continue
+                            
+                            # Create Download record
+                            timeout_date = datetime.utcnow() + timedelta(days=15)
+                            
+                            download = Download(
+                                torrent_hash=info_hash,
+                                magnet_link=best_torrent.torrent.magnet_link,
+                                status='downloading',
+                                media_type='tv',
+                                metadata_json=json.dumps({
+                                    'name': torrent_info.get('name'),
+                                    'size': torrent_info.get('size'),
+                                    'num_files': len(files),
+                                    'indexer': best_torrent.torrent.indexer,
+                                    'score': best_torrent.final_score,
+                                    'auto_requested': True
+                                }),
+                                will_timeout_at=timeout_date,
+                                tmdb_id=media_request.tmdb_id,
+                                year=media_request.year,
+                                season=season_cache.season_number,
+                                episodes=json.dumps([episode_num]),
+                                media_request_id=media_request.id,
+                                retry_count=0,
+                                torrent_attempt=1
+                            )
+                            
+                            db.add(download)
+                            db.flush()
+                            
+                            # Create SeasonRequest
+                            season_req = SeasonRequest(
+                                download_id=download.id,
+                                season_number=season_cache.season_number,
+                                episode_numbers=json.dumps([episode_num]),
+                                status='pending'
+                            )
+                            
+                            db.add(season_req)
+                            db.commit()
+                            
+                            logger.info(f"✓ Successfully added download for S{season_cache.season_number:02d}E{episode_num:02d}")
+                            
+                        except Exception as ep_err:
+                            logger.error(f"Error processing episode: {ep_err}")
+                            continue
+                
+            except Exception as e:
+                logger.error(f"Error checking {media_request.title}: {e}")
+                continue
+        
+        logger.info("[NIGHTLY CHECK] Nightly episode check completed")
+        
+    except Exception as e:
+        logger.error(f"[NIGHTLY CHECK] Fatal error in nightly episode check: {e}")
+        import traceback
+        traceback.print_exc()
+    finally:
+        db.close()
+
+
 def start_monitor():
     """Start the download monitoring scheduler."""
     scheduler = get_scheduler()
@@ -923,6 +1364,16 @@ def start_monitor():
         hour=3,
         minute=0,
         id='cleanup_downloads',
+        replace_existing=True
+    )
+    
+    # Nightly episode check at 2 AM (retry failed + check new episodes)
+    scheduler.add_job(
+        nightly_episode_check,
+        'cron',
+        hour=2,
+        minute=0,
+        id='nightly_episodes',
         replace_existing=True
     )
     

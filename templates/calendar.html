@@ -1,0 +1,301 @@
+{% extends "base.html" %}
+
+{% block title %}Calendar - Plex Manager{% endblock %}
+
+{% block extra_css %}
+<link rel="stylesheet" href="/static/css/calendar.css">
+{% endblock %}
+
+{% block content %}
+<div class="calendar-container">
+    <div class="calendar-header">
+        <div class="header-left">
+            <h1>📅 Upcoming Episodes</h1>
+            <p>Track new episode releases from your requested TV shows</p>
+        </div>
+        
+        <div class="header-controls">
+            <button id="prevMonth" class="month-nav-btn">
+                <span>←</span> Previous
+            </button>
+            <h2 id="currentMonth" class="current-month-display"></h2>
+            <button id="nextMonth" class="month-nav-btn">
+                Next <span>→</span>
+            </button>
+        </div>
+    </div>
+    
+    <div id="loadingSpinner" class="loading-spinner">
+        <div class="spinner"></div>
+        <p>Loading episodes...</p>
+    </div>
+    
+    <div id="calendarContent" class="calendar-content" style="display: none;">
+        <div id="episodeList" class="episode-list"></div>
+        
+        <div id="noEpisodesMessage" class="no-episodes" style="display: none;">
+            <div class="no-episodes-icon">📺</div>
+            <h3>No Upcoming Episodes</h3>
+            <p>No tracked shows have episodes airing this month.</p>
+            <p class="help-text">Request TV shows with "Track Upcoming" enabled to see future episodes here.</p>
+        </div>
+    </div>
+</div>
+
+<!-- Episode Request Modal -->
+<div id="requestModal" class="modal" style="display: none;">
+    <div class="modal-content">
+        <div class="modal-header">
+            <h2>Request Episode</h2>
+            <button class="modal-close" onclick="closeRequestModal()">&times;</button>
+        </div>
+        <div class="modal-body">
+            <div class="episode-info">
+                <h3 id="modalShowTitle"></h3>
+                <p id="modalEpisodeDetails"></p>
+                <p id="modalAirDate"></p>
+                <p id="modalOverview"></p>
+            </div>
+            <div class="modal-actions">
+                <button id="confirmRequestBtn" class="btn-primary">Request Download</button>
+                <button class="btn-secondary" onclick="closeRequestModal()">Cancel</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+let currentYear = new Date().getFullYear();
+let currentMonth = new Date().getMonth() + 1; // 1-12
+let episodeCache = {}; // Cache episodes by month key
+let selectedEpisode = null;
+
+async function fetchEpisodes(year, month) {
+    const cacheKey = `${year}-${month}`;
+    
+    // Return cached if available
+    if (episodeCache[cacheKey]) {
+        return episodeCache[cacheKey];
+    }
+    
+    const response = await fetch(`/api/calendar/episodes?year=${year}&month=${month}`);
+    if (!response.ok) {
+        throw new Error(`Failed to fetch episodes: ${response.statusText}`);
+    }
+    
+    const data = await response.json();
+    episodeCache[cacheKey] = data;
+    return data;
+}
+
+function renderEpisodes(data) {
+    const episodeList = document.getElementById('episodeList');
+    const noEpisodesMessage = document.getElementById('noEpisodesMessage');
+    
+    if (data.episodes.length === 0) {
+        episodeList.innerHTML = '';
+        noEpisodesMessage.style.display = 'block';
+        return;
+    }
+    
+    noEpisodesMessage.style.display = 'none';
+    
+    // Group episodes by date
+    const episodesByDate = {};
+    data.episodes.forEach(ep => {
+        if (!episodesByDate[ep.air_date]) {
+            episodesByDate[ep.air_date] = [];
+        }
+        episodesByDate[ep.air_date].push(ep);
+    });
+    
+    // Sort dates
+    const sortedDates = Object.keys(episodesByDate).sort();
+    
+    // Build HTML
+    let html = '';
+    sortedDates.forEach(date => {
+        const dateObj = new Date(date + 'T00:00:00');
+        const formattedDate = dateObj.toLocaleDateString('en-US', { 
+            weekday: 'long', 
+            year: 'numeric', 
+            month: 'long', 
+            day: 'numeric' 
+        });
+        
+        html += `<div class="date-group">`;
+        html += `<h3 class="date-header">${formattedDate}</h3>`;
+        html += `<div class="episodes-grid">`;
+        
+        episodesByDate[date].forEach(ep => {
+            const statusBadge = getStatusBadge(ep);
+            const stillUrl = ep.still_path ? 
+                `https://image.tmdb.org/t/p/w500${ep.still_path}` : 
+                '/static/img/placeholder.jpg';
+            
+            html += `
+                <div class="episode-card" data-episode='${JSON.stringify(ep)}'>
+                    <div class="episode-thumbnail">
+                        <img src="${stillUrl}" alt="${ep.episode_title}" loading="lazy">
+                        ${statusBadge}
+                    </div>
+                    <div class="episode-details">
+                        <h4 class="show-title">${ep.show_title}</h4>
+                        <p class="episode-title">S${String(ep.season).padStart(2, '0')}E${String(ep.episode).padStart(2, '0')} - ${ep.episode_title}</p>
+                        <p class="episode-overview">${ep.overview ? ep.overview.substring(0, 150) + (ep.overview.length > 150 ? '...' : '') : 'No description available.'}</p>
+                        ${getActionButton(ep)}
+                    </div>
+                </div>
+            `;
+        });
+        
+        html += `</div></div>`;
+    });
+    
+    episodeList.innerHTML = html;
+    
+    // Attach event listeners to request buttons
+    document.querySelectorAll('.request-episode-btn').forEach(btn => {
+        btn.addEventListener('click', function() {
+            const episodeData = JSON.parse(this.getAttribute('data-episode'));
+            openRequestModal(episodeData);
+        });
+    });
+}
+
+function getStatusBadge(episode) {
+    if (!episode.is_requested) {
+        return '<div class="status-badge status-tracked">Tracked</div>';
+    }
+    
+    switch(episode.download_status) {
+        case 'downloading':
+            return `<div class="status-badge status-downloading">Downloading ${Math.round(episode.download_progress)}%</div>`;
+        case 'completed':
+        case 'seeding':
+            return '<div class="status-badge status-completed">Downloaded</div>';
+        case 'pending':
+            return '<div class="status-badge status-pending">Searching...</div>';
+        case 'failed':
+            return '<div class="status-badge status-failed">Failed</div>';
+        default:
+            return '<div class="status-badge status-requested">Requested</div>';
+    }
+}
+
+function getActionButton(episode) {
+    if (!episode.is_requested) {
+        return `<button class="request-episode-btn" data-episode='${JSON.stringify(episode)}'>Request Episode</button>`;
+    } else if (episode.download_status === 'failed') {
+        return `<button class="request-episode-btn retry-btn" data-episode='${JSON.stringify(episode)}'>Retry Download</button>`;
+    } else {
+        return ''; // Already requested or downloading
+    }
+}
+
+function openRequestModal(episode) {
+    selectedEpisode = episode;
+    
+    document.getElementById('modalShowTitle').textContent = episode.show_title;
+    document.getElementById('modalEpisodeDetails').textContent = 
+        `Season ${episode.season}, Episode ${episode.episode}: ${episode.episode_title}`;
+    document.getElementById('modalAirDate').textContent = 
+        `Air Date: ${new Date(episode.air_date + 'T00:00:00').toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' })}`;
+    document.getElementById('modalOverview').textContent = 
+        episode.overview || 'No description available.';
+    
+    document.getElementById('requestModal').style.display = 'flex';
+}
+
+function closeRequestModal() {
+    document.getElementById('requestModal').style.display = 'none';
+    selectedEpisode = null;
+}
+
+document.getElementById('confirmRequestBtn').addEventListener('click', async function() {
+    if (!selectedEpisode) return;
+    
+    this.disabled = true;
+    this.textContent = 'Requesting...';
+    
+    try {
+        // TODO: Implement episode request API endpoint
+        // For now, show success message
+        showToast(`Request submitted for ${selectedEpisode.show_title} S${selectedEpisode.season}E${selectedEpisode.episode}`, 'success');
+        closeRequestModal();
+        
+        // Refresh current month
+        await loadMonth(currentYear, currentMonth);
+    } catch (error) {
+        console.error('Request failed:', error);
+        showToast('Failed to request episode', 'error');
+        this.disabled = false;
+        this.textContent = 'Request Download';
+    }
+});
+
+async function loadMonth(year, month) {
+    const loadingSpinner = document.getElementById('loadingSpinner');
+    const calendarContent = document.getElementById('calendarContent');
+    
+    loadingSpinner.style.display = 'flex';
+    calendarContent.style.display = 'none';
+    
+    try {
+        const data = await fetchEpisodes(year, month);
+        renderEpisodes(data);
+        updateMonthDisplay(year, month);
+        
+        calendarContent.style.display = 'block';
+        loadingSpinner.style.display = 'none';
+    } catch (error) {
+        console.error('Failed to load episodes:', error);
+        showToast('Failed to load calendar', 'error');
+        loadingSpinner.style.display = 'none';
+    }
+}
+
+function updateMonthDisplay(year, month) {
+    const monthNames = ['January', 'February', 'March', 'April', 'May', 'June',
+                       'July', 'August', 'September', 'October', 'November', 'December'];
+    document.getElementById('currentMonth').textContent = `${monthNames[month - 1]} ${year}`;
+}
+
+document.getElementById('prevMonth').addEventListener('click', function() {
+    currentMonth--;
+    if (currentMonth < 1) {
+        currentMonth = 12;
+        currentYear--;
+    }
+    loadMonth(currentYear, currentMonth);
+});
+
+document.getElementById('nextMonth').addEventListener('click', function() {
+    currentMonth++;
+    if (currentMonth > 12) {
+        currentMonth = 1;
+        currentYear++;
+    }
+    loadMonth(currentYear, currentMonth);
+});
+
+function showToast(message, type = 'success') {
+    // Reuse existing toast notification system from homepage
+    const toast = document.createElement('div');
+    toast.className = `toast toast-${type}`;
+    toast.textContent = message;
+    document.body.appendChild(toast);
+    
+    setTimeout(() => toast.classList.add('show'), 100);
+    setTimeout(() => {
+        toast.classList.remove('show');
+        setTimeout(() => toast.remove(), 300);
+    }, 3000);
+}
+
+// Initialize calendar on page load
+document.addEventListener('DOMContentLoaded', function() {
+    loadMonth(currentYear, currentMonth);
+});
+</script>
+{% endblock %}

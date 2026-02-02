@@ -23,7 +23,7 @@ from src.auth import router as auth_router, get_current_user
 from src.downloads import router as downloads_router
 from src.retention_api import router as retention_router
 from src.download_monitor import start_monitor, stop_monitor
-from src.models import User
+from src.models import User, MediaRequest, Download
 
 # Configure logging to show INFO and above
 logging.basicConfig(
@@ -735,6 +735,179 @@ async def downloads_view(
         "user": user,
         "current_page": "downloads"
     })
+
+
+@app.get("/calendar", response_class=HTMLResponse)
+async def calendar_view(
+    request: Request,
+    user: User = Depends(get_current_user)
+):
+    """
+    Calendar page showing upcoming TV episode releases for tracked shows.
+    """
+    return templates.TemplateResponse("calendar.html", {
+        "request": request,
+        "user": user,
+        "current_page": "calendar"
+    })
+
+
+@app.get("/api/calendar/episodes")
+async def api_calendar_episodes(
+    year: int,
+    month: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Get upcoming TV episode releases for calendar view.
+    Loads 3 months (requested month ±1) for smooth navigation.
+    Returns episodes with air dates and request status.
+    
+    Args:
+        year: Year (e.g., 2026)
+        month: Month (1-12)
+        
+    Returns:
+        JSON with episodes grouped by air date
+    """
+    from src.models import TMDBSeasonCache, SeasonRequest
+    from src.TMDB import season_service, safe_tmdb_call
+    from datetime import date
+    from calendar import monthrange
+    
+    try:
+        # Calculate 3-month range (requested ±1 month)
+        # Start: First day of previous month
+        if month == 1:
+            start_year, start_month = year - 1, 12
+        else:
+            start_year, start_month = year, month - 1
+        start_date = date(start_year, start_month, 1)
+        
+        # End: Last day of next month
+        if month == 12:
+            end_year, end_month = year + 1, 1
+        else:
+            end_year, end_month = year, month + 1
+        _, last_day = monthrange(end_year, end_month)
+        end_date = date(end_year, end_month, last_day)
+        
+        logger.info(f"[CALENDAR API] User {current_user.username} - Fetching episodes from {start_date} to {end_date}")
+        
+        # Get all tracked TV shows for this user
+        tracked_requests = db.query(MediaRequest).filter(
+            MediaRequest.user_id == current_user.id,
+            MediaRequest.media_type == 'tv',
+            MediaRequest.track_upcoming == 1,
+            MediaRequest.status != 'deleted'
+        ).all()
+        
+        if not tracked_requests:
+            return {
+                "episodes": [],
+                "start_date": start_date.isoformat(),
+                "end_date": end_date.isoformat(),
+                "requested_month": f"{year}-{month:02d}"
+            }
+        
+        logger.info(f"[CALENDAR API] Found {len(tracked_requests)} tracked shows")
+        
+        calendar_episodes = []
+        
+        for media_request in tracked_requests:
+            try:
+                # Get all ongoing seasons for this show
+                ongoing_seasons = db.query(TMDBSeasonCache).filter(
+                    TMDBSeasonCache.tmdb_id == media_request.tmdb_id,
+                    TMDBSeasonCache.season_status == 'ongoing'
+                ).all()
+                
+                if not ongoing_seasons:
+                    continue
+                
+                for season_cache in ongoing_seasons:
+                    # Fetch episode details from TMDB
+                    season_details = safe_tmdb_call(
+                        season_service.details,
+                        media_request.tmdb_id,
+                        season_cache.season_number
+                    )
+                    
+                    if not season_details or not hasattr(season_details, 'episodes'):
+                        continue
+                    
+                    # Filter episodes by date range
+                    for episode in season_details.episodes:
+                        if not hasattr(episode, 'air_date') or not episode.air_date:
+                            continue
+                        
+                        try:
+                            ep_air_date = datetime.strptime(episode.air_date, '%Y-%m-%d').date()
+                        except:
+                            continue
+                        
+                        # Only include episodes in 3-month range
+                        if not (start_date <= ep_air_date <= end_date):
+                            continue
+                        
+                        episode_num = episode.episode_number
+                        
+                        # Check if episode is requested (look for SeasonRequest)
+                        season_request = db.query(SeasonRequest).join(Download).filter(
+                            Download.media_request_id == media_request.id,
+                            SeasonRequest.season_number == season_cache.season_number,
+                            SeasonRequest.episode_numbers.like(f'%{episode_num}%')
+                        ).first()
+                        
+                        # Get download status if exists
+                        download_status = None
+                        download_progress = None
+                        if season_request:
+                            download = db.query(Download).filter(
+                                Download.id == season_request.download_id
+                            ).first()
+                            if download:
+                                download_status = download.status
+                                download_progress = download.progress
+                        
+                        calendar_episodes.append({
+                            "id": f"{media_request.tmdb_id}_s{season_cache.season_number}_e{episode_num}",
+                            "tmdb_id": media_request.tmdb_id,
+                            "show_title": media_request.title,
+                            "season": season_cache.season_number,
+                            "episode": episode_num,
+                            "episode_title": episode.name if hasattr(episode, 'name') else '',
+                            "air_date": episode.air_date,
+                            "overview": episode.overview if hasattr(episode, 'overview') else '',
+                            "still_path": episode.still_path if hasattr(episode, 'still_path') else None,
+                            "is_requested": season_request is not None,
+                            "download_status": download_status,
+                            "download_progress": download_progress,
+                            "media_request_id": media_request.id
+                        })
+            
+            except Exception as e:
+                logger.error(f"[CALENDAR API] Error processing {media_request.title}: {e}")
+                continue
+        
+        # Sort by air date
+        calendar_episodes.sort(key=lambda x: x['air_date'])
+        
+        logger.info(f"[CALENDAR API] Returning {len(calendar_episodes)} episodes")
+        
+        return {
+            "episodes": calendar_episodes,
+            "start_date": start_date.isoformat(),
+            "end_date": end_date.isoformat(),
+            "requested_month": f"{year}-{month:02d}"
+        }
+        
+    except Exception as e:
+        logger.error(f"[CALENDAR API] Error: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/external/plex")

@@ -1,0 +1,511 @@
+/* Calendar Page Styles */
+
+:root {
+    --plex-gold: #E5A00D;
+    --plex-dark: #282A2D;
+    --plex-darker: #1A1B1D;
+    --plex-light: #CCCCCC;
+    --plex-white: #FFFFFF;
+    --plex-red: #CC3333;
+    --plex-green: #33CC66;
+    --plex-blue: #3399CC;
+}
+
+.calendar-container {
+    padding: 80px 40px 40px 40px;
+    max-width: 1600px;
+    margin: 0 auto;
+}
+
+.calendar-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 30px;
+    flex-wrap: wrap;
+    gap: 20px;
+}
+
+.header-left h1 {
+    font-size: 36px;
+    font-weight: bold;
+    color: var(--plex-gold);
+    margin: 0 0 10px 0;
+}
+
+.header-left p {
+    font-size: 16px;
+    color: var(--plex-light);
+    margin: 0;
+}
+
+.header-controls {
+    display: flex;
+    align-items: center;
+    gap: 20px;
+}
+
+.current-month-display {
+    font-size: 24px;
+    font-weight: 600;
+    color: var(--plex-white);
+    margin: 0;
+    min-width: 200px;
+    text-align: center;
+}
+
+.month-nav-btn {
+    background: var(--plex-dark);
+    color: var(--plex-white);
+    border: 2px solid var(--plex-gold);
+    padding: 10px 20px;
+    border-radius: 8px;
+    font-size: 16px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.month-nav-btn:hover {
+    background: var(--plex-gold);
+    color: var(--plex-darker);
+    transform: translateY(-2px);
+}
+
+.month-nav-btn:active {
+    transform: translateY(0);
+}
+
+.loading-spinner {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 100px 0;
+}
+
+.spinner {
+    border: 4px solid rgba(229, 160, 13, 0.1);
+    border-left-color: var(--plex-gold);
+    border-radius: 50%;
+    width: 50px;
+    height: 50px;
+    animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+    to { transform: rotate(360deg); }
+}
+
+.loading-spinner p {
+    margin-top: 20px;
+    color: var(--plex-light);
+    font-size: 16px;
+}
+
+.calendar-content {
+    margin-top: 30px;
+}
+
+.date-group {
+    margin-bottom: 50px;
+}
+
+.date-header {
+    font-size: 24px;
+    font-weight: 600;
+    color: var(--plex-gold);
+    margin-bottom: 20px;
+    padding-bottom: 10px;
+    border-bottom: 2px solid var(--plex-dark);
+}
+
+.episodes-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(400px, 1fr));
+    gap: 20px;
+}
+
+.episode-card {
+    background: var(--plex-dark);
+    border-radius: 12px;
+    overflow: hidden;
+    transition: all 0.3s ease;
+    cursor: pointer;
+    border: 2px solid transparent;
+}
+
+.episode-card:hover {
+    transform: translateY(-4px);
+    border-color: var(--plex-gold);
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+}
+
+.episode-thumbnail {
+    position: relative;
+    width: 100%;
+    padding-top: 56.25%; /* 16:9 aspect ratio */
+    overflow: hidden;
+    background: var(--plex-darker);
+}
+
+.episode-thumbnail img {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    transition: transform 0.3s ease;
+}
+
+.episode-card:hover .episode-thumbnail img {
+    transform: scale(1.05);
+}
+
+.status-badge {
+    position: absolute;
+    top: 10px;
+    right: 10px;
+    padding: 6px 12px;
+    border-radius: 6px;
+    font-size: 12px;
+    font-weight: 600;
+    text-transform: uppercase;
+    backdrop-filter: blur(10px);
+}
+
+.status-tracked {
+    background: rgba(51, 153, 204, 0.9);
+    color: white;
+}
+
+.status-requested {
+    background: rgba(229, 160, 13, 0.9);
+    color: white;
+}
+
+.status-downloading {
+    background: rgba(51, 204, 102, 0.9);
+    color: white;
+}
+
+.status-completed {
+    background: rgba(51, 204, 102, 0.9);
+    color: white;
+}
+
+.status-pending {
+    background: rgba(153, 153, 153, 0.9);
+    color: white;
+}
+
+.status-failed {
+    background: rgba(204, 51, 51, 0.9);
+    color: white;
+}
+
+.episode-details {
+    padding: 16px;
+}
+
+.show-title {
+    font-size: 18px;
+    font-weight: 600;
+    color: var(--plex-white);
+    margin: 0 0 8px 0;
+}
+
+.episode-title {
+    font-size: 14px;
+    font-weight: 500;
+    color: var(--plex-gold);
+    margin: 0 0 12px 0;
+}
+
+.episode-overview {
+    font-size: 14px;
+    color: var(--plex-light);
+    line-height: 1.5;
+    margin: 0 0 16px 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    display: -webkit-box;
+    -webkit-line-clamp: 3;
+    -webkit-box-orient: vertical;
+}
+
+.request-episode-btn {
+    width: 100%;
+    padding: 10px 16px;
+    background: var(--plex-gold);
+    color: var(--plex-darker);
+    border: none;
+    border-radius: 6px;
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.2s ease;
+}
+
+.request-episode-btn:hover {
+    background: #FFB71B;
+    transform: translateY(-2px);
+}
+
+.request-episode-btn:active {
+    transform: translateY(0);
+}
+
+.request-episode-btn.retry-btn {
+    background: var(--plex-red);
+    color: white;
+}
+
+.request-episode-btn.retry-btn:hover {
+    background: #DD4444;
+}
+
+.no-episodes {
+    text-align: center;
+    padding: 80px 20px;
+}
+
+.no-episodes-icon {
+    font-size: 80px;
+    margin-bottom: 20px;
+}
+
+.no-episodes h3 {
+    font-size: 28px;
+    font-weight: 600;
+    color: var(--plex-white);
+    margin: 0 0 12px 0;
+}
+
+.no-episodes p {
+    font-size: 16px;
+    color: var(--plex-light);
+    margin: 8px 0;
+}
+
+.no-episodes .help-text {
+    font-size: 14px;
+    color: var(--plex-gold);
+    margin-top: 20px;
+}
+
+/* Modal Styles */
+.modal {
+    display: none;
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background: rgba(0, 0, 0, 0.8);
+    justify-content: center;
+    align-items: center;
+    z-index: 10000;
+    backdrop-filter: blur(5px);
+}
+
+.modal-content {
+    background: var(--plex-dark);
+    border-radius: 16px;
+    max-width: 600px;
+    width: 90%;
+    max-height: 80vh;
+    overflow-y: auto;
+    box-shadow: 0 12px 48px rgba(0, 0, 0, 0.6);
+}
+
+.modal-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 24px;
+    border-bottom: 2px solid var(--plex-darker);
+}
+
+.modal-header h2 {
+    font-size: 24px;
+    font-weight: 600;
+    color: var(--plex-gold);
+    margin: 0;
+}
+
+.modal-close {
+    background: transparent;
+    border: none;
+    color: var(--plex-light);
+    font-size: 32px;
+    cursor: pointer;
+    padding: 0;
+    width: 40px;
+    height: 40px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 6px;
+    transition: all 0.2s ease;
+}
+
+.modal-close:hover {
+    background: var(--plex-darker);
+    color: var(--plex-white);
+}
+
+.modal-body {
+    padding: 24px;
+}
+
+.episode-info h3 {
+    font-size: 20px;
+    font-weight: 600;
+    color: var(--plex-white);
+    margin: 0 0 12px 0;
+}
+
+.episode-info p {
+    font-size: 14px;
+    color: var(--plex-light);
+    line-height: 1.6;
+    margin: 8px 0;
+}
+
+.modal-actions {
+    display: flex;
+    gap: 12px;
+    margin-top: 24px;
+}
+
+.btn-primary,
+.btn-secondary {
+    flex: 1;
+    padding: 12px 24px;
+    border: none;
+    border-radius: 8px;
+    font-size: 16px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.2s ease;
+}
+
+.btn-primary {
+    background: var(--plex-gold);
+    color: var(--plex-darker);
+}
+
+.btn-primary:hover {
+    background: #FFB71B;
+    transform: translateY(-2px);
+}
+
+.btn-primary:disabled {
+    background: var(--plex-light);
+    cursor: not-allowed;
+    transform: none;
+}
+
+.btn-secondary {
+    background: var(--plex-darker);
+    color: var(--plex-white);
+    border: 2px solid var(--plex-dark);
+}
+
+.btn-secondary:hover {
+    background: var(--plex-dark);
+    border-color: var(--plex-gold);
+}
+
+/* Toast Notifications */
+.toast {
+    position: fixed;
+    bottom: 30px;
+    right: 30px;
+    background: var(--plex-dark);
+    color: var(--plex-white);
+    padding: 16px 24px;
+    border-radius: 8px;
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+    z-index: 10001;
+    opacity: 0;
+    transform: translateY(20px);
+    transition: all 0.3s ease;
+}
+
+.toast.show {
+    opacity: 1;
+    transform: translateY(0);
+}
+
+.toast-success {
+    border-left: 4px solid var(--plex-green);
+}
+
+.toast-error {
+    border-left: 4px solid var(--plex-red);
+}
+
+/* Responsive Design */
+@media (max-width: 1024px) {
+    .episodes-grid {
+        grid-template-columns: repeat(auto-fill, minmax(350px, 1fr));
+    }
+}
+
+@media (max-width: 768px) {
+    .calendar-container {
+        padding: 60px 20px 20px 20px;
+    }
+    
+    .calendar-header {
+        flex-direction: column;
+        align-items: flex-start;
+    }
+    
+    .header-controls {
+        width: 100%;
+        justify-content: space-between;
+    }
+    
+    .current-month-display {
+        font-size: 20px;
+        min-width: auto;
+    }
+    
+    .month-nav-btn {
+        padding: 8px 16px;
+        font-size: 14px;
+    }
+    
+    .episodes-grid {
+        grid-template-columns: 1fr;
+    }
+    
+    .date-header {
+        font-size: 20px;
+    }
+}
+
+@media (max-width: 480px) {
+    .header-left h1 {
+        font-size: 28px;
+    }
+    
+    .header-controls {
+        gap: 10px;
+    }
+    
+    .current-month-display {
+        font-size: 18px;
+    }
+    
+    .month-nav-btn span {
+        display: none;
+    }
+}
