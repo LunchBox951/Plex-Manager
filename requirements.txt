@@ -13,6 +13,7 @@ python-multipart            # Form data parsing
 python-dotenv               # Environment variable loading
 jinja2                      # Template engine for landing page
 slowapi                     # Rate limiting
+httpx                       # Async HTTP client for testing
 
 # Database
 sqlalchemy                  # ORM for user database
@@ -21,3 +22,4 @@ cryptography                # Fernet encryption for Plex tokens
 # Download Management
 apscheduler                 # Background task scheduling for download monitoring
 guessit                     # Fallback episode name parsing from filenames
+filelock                    # Thread-safe file locking for concurrent operations

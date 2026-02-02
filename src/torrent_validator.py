@@ -345,9 +345,15 @@ def format_plex_episode_name(show_title: str, season: int, episode: int,
         ext: File extension
         
     Returns:
-        Formatted filename (e.g., 'S01E01 - Episode Name.mkv')
+        Formatted filename (e.g., 'Hazbin Hotel - S01E01 - Overture.mkv')
     """
-    filename = f"S{season:02d}E{episode:02d}"
+    # Clean show title
+    clean_title = show_title.strip()
+    # Remove problematic characters for filenames
+    clean_title = re.sub(r'[<>:"/\\|?*]', '', clean_title)
+    
+    # Build filename: "Show Title - S01E01 - Episode Name.mkv"
+    filename = f"{clean_title} - S{season:02d}E{episode:02d}"
     
     if episode_name:
         # Clean episode name

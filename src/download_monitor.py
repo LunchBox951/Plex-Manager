@@ -6,10 +6,13 @@ Polls qBittorrent for status updates and handles file operations.
 import os
 import json
 import shutil
+import tempfile
+import logging
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Dict, List, Optional
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from filelock import FileLock, Timeout
 
 from src.database import SessionLocal
 from src.models import Download, MediaRequest
@@ -19,6 +22,8 @@ from src.torrent_validator import (
     detect_subtitle_language, is_forced_subtitle,
     format_plex_subtitle_name, format_plex_episode_name
 )
+
+logger = logging.getLogger(__name__)
 
 
 # Global scheduler instance
@@ -128,9 +133,62 @@ def build_tv_path(show_title: str, year: Optional[int], season: int,
     return os.path.join(tv_path, show_dir, season_dir, episode_filename)
 
 
+def get_media_lock_path(tmdb_id: int, season: Optional[int] = None) -> str:
+    """
+    Get the lock file path for a specific media item.
+    
+    Args:
+        tmdb_id: TMDB ID of the media
+        season: Season number for TV shows (None for movies)
+    
+    Returns:
+        Path to lock file
+    """
+    lock_dir = os.path.join(tempfile.gettempdir(), 'plex_manager_locks')
+    os.makedirs(lock_dir, exist_ok=True)
+    
+    if season is not None:
+        lock_name = f"plex_copy_{tmdb_id}_s{season}.lock"
+    else:
+        lock_name = f"plex_copy_{tmdb_id}.lock"
+    
+    return os.path.join(lock_dir, lock_name)
+
+
 def process_movie_files(download: Download, torrent_files: List[Dict]) -> Dict[str, bool]:
     """
-    Process and copy movie files to Plex directory.
+    Process and copy movie files to Plex directory with file locking.
+    
+    Args:
+        download: Download record
+        torrent_files: List of torrent files
+        
+    Returns:
+        Dictionary mapping filenames to success status
+    """
+    # Acquire lock for this specific movie to prevent concurrent file operations
+    lock_path = get_media_lock_path(download.tmdb_id)
+    lock = FileLock(lock_path, timeout=300)  # 5 minute timeout
+    
+    try:
+        with lock.acquire(timeout=300):
+            logger.info(f"Acquired file lock for movie TMDB:{download.tmdb_id}")
+            return _process_movie_files_locked(download, torrent_files)
+    except Timeout:
+        logger.error(f"Timeout acquiring file lock for movie TMDB:{download.tmdb_id}")
+        return {}
+    finally:
+        # Clean up lock file if it exists
+        try:
+            if os.path.exists(lock_path):
+                os.remove(lock_path)
+        except:
+            pass
+
+
+def _process_movie_files_locked(download: Download, torrent_files: List[Dict]) -> Dict[str, bool]:
+    """
+    Internal method - process and copy movie files (assumes lock is held).
     
     Args:
         download: Download record
@@ -192,7 +250,38 @@ def process_movie_files(download: Download, torrent_files: List[Dict]) -> Dict[s
 
 def process_tv_files(download: Download, torrent_files: List[Dict]) -> Dict[str, bool]:
     """
-    Process and copy TV show files to Plex directory.
+    Process and copy TV show files to Plex directory with file locking.
+    
+    Args:
+        download: Download record
+        torrent_files: List of torrent files
+        
+    Returns:
+        Dictionary mapping filenames to success status
+    """
+    # Acquire lock for this specific season to prevent concurrent file operations
+    lock_path = get_media_lock_path(download.tmdb_id, download.season)
+    lock = FileLock(lock_path, timeout=300)  # 5 minute timeout
+    
+    try:
+        with lock.acquire(timeout=300):
+            logger.info(f"Acquired file lock for TV show TMDB:{download.tmdb_id} S{download.season}")
+            return _process_tv_files_locked(download, torrent_files)
+    except Timeout:
+        logger.error(f"Timeout acquiring file lock for TV show TMDB:{download.tmdb_id} S{download.season}")
+        return {}
+    finally:
+        # Clean up lock file if it exists
+        try:
+            if os.path.exists(lock_path):
+                os.remove(lock_path)
+        except:
+            pass
+
+
+def _process_tv_files_locked(download: Download, torrent_files: List[Dict]) -> Dict[str, bool]:
+    """
+    Internal method - process and copy TV show files (assumes lock is held).
     
     Args:
         download: Download record
@@ -359,32 +448,40 @@ def on_download_complete(download: Download, db_session):
         ).first()
         
         if media_request:
-            if download.status in ['seeding', 'completed']:
-                # Check if all downloads for this request are complete
-                all_downloads = db_session.query(Download).filter(
-                    Download.media_request_id == media_request.id
-                ).all()
+            # Check all downloads for this request
+            all_downloads = db_session.query(Download).filter(
+                Download.media_request_id == media_request.id
+            ).all()
+            
+            # Count download states
+            downloading_count = sum(1 for d in all_downloads if d.status == 'downloading')
+            seeding_count = sum(1 for d in all_downloads if d.status in ['seeding', 'completed'])
+            failed_count = sum(1 for d in all_downloads if d.status in ['failed', 'partial_failed'])
+            
+            # Determine overall status
+            if downloading_count > 0:
+                # Still have active downloads - keep status as 'downloading'
+                media_request.status = 'downloading'
+            elif seeding_count == len(all_downloads):
+                # All downloads complete and seeding
+                media_request.status = 'available'
+                media_request.completed_at = datetime.utcnow()
                 
-                all_complete = all([
-                    d.status in ['seeding', 'completed'] 
-                    for d in all_downloads
-                ])
-                
-                if all_complete:
-                    media_request.status = 'available'
-                    media_request.completed_at = datetime.utcnow()
-                    
-                    # [PLACEHOLDER] Send completion notification
-                    print(f"[NOTIFICATION PLACEHOLDER] MediaRequest {media_request.id} ({media_request.title}) - Now available in Plex!")
-                    print(f"[NOTIFICATION PLACEHOLDER] Notify user_id {media_request.user_id}")
-                else:
-                    media_request.status = 'processing'
-            else:
-                # Failed
+                # [PLACEHOLDER] Send completion notification
+                print(f"[NOTIFICATION PLACEHOLDER] MediaRequest {media_request.id} ({media_request.title}) - Now available in Plex!")
+                print(f"[NOTIFICATION PLACEHOLDER] Notify user_id {media_request.user_id}")
+            elif seeding_count > 0:
+                # Some completed, none downloading - set to processing while waiting for others
+                media_request.status = 'processing'
+            elif failed_count == len(all_downloads):
+                # All failed
                 media_request.status = 'failed'
                 
                 # [PLACEHOLDER] Send failure notification
                 print(f"[NOTIFICATION PLACEHOLDER] MediaRequest {media_request.id} failed processing")
+            else:
+                # Mixed state - some failed but not all
+                media_request.status = 'processing'
     
     db_session.commit()
     print(f"Download processing complete: {download.status}")
@@ -426,16 +523,26 @@ def on_failure(download: Download, db_session, reason: str):
         db_session: Database session
         reason: Failure reason
     """
-    print(f"Download failed {download.torrent_hash}: {reason}")
+    print(f"[FAILURE] Download ID {download.id} | Hash: {download.torrent_hash} | Reason: {reason}")
+    print(f"[FAILURE] Download ID {download.id} | Previous status: {download.status} | Setting to: failed")
     
     download.status = "failed"
     download.failed_reason = reason
     download.failed_at = datetime.utcnow()
     db_session.commit()
     
+    print(f"[FAILURE] Download ID {download.id} | Attempting to remove from qBittorrent...")
+    
     # Remove from qBittorrent
-    qb = get_qbittorrent_client()
-    qb.delete_torrent(download.torrent_hash, delete_files=True)
+    try:
+        qb = get_qbittorrent_client()
+        if qb:
+            qb.delete_torrent(download.torrent_hash, delete_files=True)
+            print(f"[FAILURE] Download ID {download.id} | Successfully removed from qBittorrent")
+        else:
+            print(f"[FAILURE] Download ID {download.id} | Could not get qBittorrent client for cleanup")
+    except Exception as e:
+        print(f"[FAILURE] Download ID {download.id} | Error removing from qBittorrent: {e}")
 
 
 def monitor_downloads():
@@ -453,19 +560,51 @@ def monitor_downloads():
             Download.status.in_(['pending', 'downloading', 'seeding'])
         ).all()
         
+        if not active_downloads:
+            return
+        
+        # Log summary of downloads being checked
+        now = datetime.utcnow()
+        print(f"\n[MONITOR] Checking {len(active_downloads)} active download(s)")
+        for dl in active_downloads:
+            age_seconds = (now - dl.added_at).total_seconds()
+            age_minutes = age_seconds / 60
+            print(f"[MONITOR]   ID {dl.id} | Hash: {dl.torrent_hash[:8]}... | Status: {dl.status} | Age: {age_minutes:.1f}min")
+        
         for download in active_downloads:
             try:
                 # Get current torrent info
                 torrent_info = qb.get_torrent_info(download.torrent_hash)
                 
                 if not torrent_info:
-                    print(f"Torrent not found in qBittorrent: {download.torrent_hash}")
-                    on_failure(download, db, "Torrent not found in qBittorrent")
+                    # Grace period for new downloads - give them 10 minutes to connect
+                    # Torrents need time to retrieve metadata and start downloading
+                    download_age = datetime.utcnow() - download.added_at
+                    grace_period_minutes = 10
+                    grace_period_seconds = grace_period_minutes * 60
+                    age_seconds = download_age.total_seconds()
+                    remaining_seconds = grace_period_seconds - age_seconds
+                    
+                    if age_seconds < grace_period_seconds:
+                        # Still within grace period - skip this check
+                        print(f"[MONITOR] ID {download.id} | Not visible in qBittorrent yet | Age: {age_seconds:.0f}s | Grace remaining: {remaining_seconds:.0f}s ({remaining_seconds/60:.1f}min)")
+                        continue
+                    
+                    # Grace period expired - mark as failed
+                    print(f"[MONITOR] ID {download.id} | NOT FOUND in qBittorrent after grace period | Age: {age_seconds:.0f}s (>{grace_period_minutes}m) | Hash: {download.torrent_hash}")
+                    print(f"[MONITOR] ID {download.id} | MARKING AS FAILED | Reason: Torrent not found in qBittorrent after grace period")
+                    on_failure(download, db, "Torrent not found in qBittorrent after grace period")
                     continue
                 
-                # Update progress and seed ratio
-                download.progress = torrent_info.get('progress', 0) * 100
-                download.seed_ratio = torrent_info.get('ratio', 0)
+                # Torrent found in qBittorrent - update progress
+                progress = torrent_info.get('progress', 0) * 100
+                ratio = torrent_info.get('ratio', 0)
+                state = torrent_info.get('state', 'unknown')
+                
+                print(f"[MONITOR] ID {download.id} | ✓ Found in qBittorrent | State: {state} | Progress: {progress:.1f}% | Ratio: {ratio:.2f}")
+                
+                download.progress = progress
+                download.seed_ratio = ratio
                 
                 # Update MediaRequest status if linked
                 if download.media_request_id:
@@ -481,22 +620,26 @@ def monitor_downloads():
                 
                 # Check for errors
                 if 'error' in qb_state.lower() or qb_state == 'missingFiles':
+                    print(f"[MONITOR] ID {download.id} | ERROR STATE DETECTED | qBittorrent state: {qb_state} | MARKING AS FAILED")
                     on_failure(download, db, f"qBittorrent error state: {qb_state}")
                     continue
                 
                 # Check if download just completed
                 if download.status == 'downloading' and download.progress >= 99.9:
+                    print(f"[MONITOR] ID {download.id} | DOWNLOAD COMPLETE | Progress: {download.progress:.1f}% | Transitioning to seeding")
                     on_download_complete(download, db)
                     continue
                 
                 # Check if seeding and ratio met
                 if download.status == 'seeding':
                     if download.seed_ratio >= download.target_seed_ratio:
+                        print(f"[MONITOR] ID {download.id} | SEED RATIO MET | Ratio: {download.seed_ratio:.2f} >= {download.target_seed_ratio:.2f} | Completing")
                         on_seed_complete_or_timeout(download, db, "seed_complete")
                         continue
                     
                     # Check for timeout
                     if download.will_timeout_at and datetime.utcnow() >= download.will_timeout_at:
+                        print(f"[MONITOR] ID {download.id} | SEED TIMEOUT | Ratio: {download.seed_ratio:.2f}/{download.target_seed_ratio:.2f} | Timeout reached")
                         on_seed_complete_or_timeout(download, db, "timeout")
                         continue
                 
@@ -504,11 +647,22 @@ def monitor_downloads():
                 db.commit()
                 
             except Exception as e:
-                print(f"Error monitoring download {download.id}: {e}")
+                print(f"[MONITOR] ERROR processing download {download.id}: {e}")
                 db.rollback()
         
+        # Summary after checking all downloads
+        final_status = db.query(Download).filter(
+            Download.status.in_(['pending', 'downloading', 'seeding'])
+        ).all()
+        
+        status_counts = {}
+        for dl in final_status:
+            status_counts[dl.status] = status_counts.get(dl.status, 0) + 1
+        
+        print(f"[MONITOR] Cycle complete | Active: {len(final_status)} | Breakdown: {status_counts}")
+        
     except Exception as e:
-        print(f"Error in monitor_downloads: {e}")
+        print(f"[MONITOR] FATAL ERROR in monitor_downloads: {e}")
     finally:
         db.close()
 
@@ -751,13 +905,15 @@ def start_monitor():
     """Start the download monitoring scheduler."""
     scheduler = get_scheduler()
     
-    # Monitor downloads every 60 seconds
+    # Monitor downloads every 15 seconds for faster progress updates
+    # max_instances=1 prevents overlapping executions if monitor takes >15s
     scheduler.add_job(
         monitor_downloads,
         'interval',
-        seconds=60,
+        seconds=15,
         id='monitor_downloads',
-        replace_existing=True
+        replace_existing=True,
+        max_instances=1
     )
     
     # Cleanup old downloads daily at 3 AM
@@ -801,7 +957,7 @@ def start_monitor():
     )
     
     scheduler.start()
-    print("Download monitor started")
+    logger.info("Download monitor started - monitoring every 15 seconds")
 
 
 def stop_monitor():

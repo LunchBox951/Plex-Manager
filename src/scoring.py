@@ -38,6 +38,16 @@ SEASON_PACK_PATTERNS = [
     r'\d+x\d+-\d+x\d+', # 1x01-1x10
 ]
 
+# Multi-season pack detection patterns (S01-S05, Seasons 1-5, Complete Series, etc.)
+MULTI_SEASON_PATTERNS = [
+    r'S(\d{2})-S(\d{2})',              # S01-S05, S01-S02
+    r'S(\d{2})\s*-\s*S(\d{2})',        # S01 - S05
+    r'Season[s]?\s*(\d+)\s*-\s*(\d+)', # Seasons 1-5, Season 1-5
+    r'Complete\s*Series',              # Complete Series
+    r'The\s*Complete',                 # The Complete (Collection)
+    r'All\s*Seasons',                  # All Seasons
+]
+
 # Episode count detection patterns (for title parsing)
 EPISODE_COUNT_PATTERNS = [
     r'(\d+)\s*Episodes?',  # "10 Episodes"
@@ -115,6 +125,45 @@ def detect_season_pack(title: str) -> bool:
     for pattern in SEASON_PACK_PATTERNS:
         if re.search(pattern, title, re.IGNORECASE):
             return True
+    return False
+
+
+def is_multi_season_pack(title: str) -> bool:
+    """
+    Detect if torrent contains multiple seasons (S01-S05, Complete Series, etc.).
+    
+    Args:
+        title: Torrent title
+        
+    Returns:
+        True if multi-season pack detected, False otherwise
+        
+    Examples:
+        "Breaking Bad S01-S05 Complete" -> True
+        "Breaking Bad Complete Series" -> True
+        "Breaking Bad S01 Complete" -> False
+        "Better Call Saul Seasons 1-3" -> True
+    """
+    for pattern in MULTI_SEASON_PATTERNS:
+        match = re.search(pattern, title, re.IGNORECASE)
+        if match:
+            # For patterns with capture groups, verify it's actually multiple seasons
+            if match.groups():
+                try:
+                    season1 = int(match.group(1))
+                    season2 = int(match.group(2))
+                    if season2 > season1:  # Verify second season is greater
+                        logger.debug(f"Multi-season pack detected: {title} (S{season1:02d}-S{season2:02d})")
+                        return True
+                except (IndexError, ValueError):
+                    # For "Complete Series", "All Seasons" patterns without groups
+                    logger.debug(f"Multi-season pack detected: {title}")
+                    return True
+            else:
+                # Pattern matched without capture groups (Complete Series, All Seasons)
+                logger.debug(f"Multi-season pack detected: {title}")
+                return True
+    
     return False
 
 

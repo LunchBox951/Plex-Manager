@@ -4,6 +4,7 @@ Handles routing, middleware, and application lifecycle.
 """
 
 import os
+import logging
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request, Depends, HTTPException
 from fastapi.responses import HTMLResponse, RedirectResponse
@@ -21,6 +22,14 @@ from src.downloads import router as downloads_router
 from src.retention_api import router as retention_router
 from src.download_monitor import start_monitor, stop_monitor
 from src.models import User
+
+# Configure logging to show INFO and above
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s [%(levelname)s] [%(name)s] %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
+)
+logger = logging.getLogger(__name__)
 
 
 # Validate required environment variables
@@ -391,7 +400,8 @@ async def api_request_status(
     db: Session = Depends(get_db)
 ):
     """Get status of a media request for polling."""
-    from src.models import MediaRequest
+    from src.models import MediaRequest, Download
+    from src.qbittorrent import get_qbittorrent_client
     
     # Find request
     media_request = db.query(MediaRequest).filter(MediaRequest.id == request_id).first()
@@ -404,20 +414,58 @@ async def api_request_status(
         raise HTTPException(status_code=403, detail="Access denied")
     
     # Calculate progress based on downloads
-    from src.models import Download
     downloads = db.query(Download).filter(Download.media_request_id == request_id).all()
     
     total_progress = 0
+    total_speed = 0
+    total_eta = 0
+    active_downloads = 0
+    
     if downloads:
         total_progress = sum(d.progress for d in downloads) / len(downloads)
+        
+        # Get download speed and ETA from qBittorrent for active downloads
+        if media_request.status == 'downloading':
+            try:
+                qb = get_qbittorrent_client()
+                for download in downloads:
+                    if download.status == 'downloading' and download.torrent_hash:
+                        try:
+                            torrent_info = qb.torrents_info(torrent_hashes=download.torrent_hash)
+                            if torrent_info and len(torrent_info) > 0:
+                                torrent = torrent_info[0]
+                                total_speed += torrent.get('dlspeed', 0)
+                                eta = torrent.get('eta', 0)
+                                if eta > 0 and eta < 8640000:  # Ignore if > 100 days
+                                    total_eta += eta
+                                    active_downloads += 1
+                        except Exception as e:
+                            print(f"Error fetching torrent info for {download.torrent_hash}: {e}")
+                            continue
+            except Exception as e:
+                print(f"Error connecting to qBittorrent: {e}")
     
-    return {
+    # Calculate average ETA if we have active downloads
+    avg_eta = (total_eta / active_downloads) if active_downloads > 0 else 0
+    
+    response = {
         "request_id": request_id,
         "status": media_request.status,
         "progress": round(total_progress, 2),
         "title": media_request.title,
         "media_type": media_request.media_type
     }
+    
+    # Add speed and ETA if downloading
+    if total_speed > 0:
+        response["download_speed"] = total_speed  # bytes per second
+    if avg_eta > 0:
+        response["eta"] = int(avg_eta)  # seconds
+    
+    # Log the response for debugging
+    print(f"[STATUS API] Request {request_id} | Status: {media_request.status} | Progress: {round(total_progress, 2)}% | Downloads: {len(downloads)}")
+    
+    return response
 
 
 @app.get("/media/{media_type}/{tmdb_id}", response_class=HTMLResponse)
@@ -563,7 +611,8 @@ async def get_media_status(
             "progress": progress,
             "title": title,
             "in_library": media_request.status == "available",
-            "status": media_request.status
+            "status": media_request.status,
+            "request_id": media_request.id
         }
         
     except HTTPException:
@@ -573,6 +622,32 @@ async def get_media_status(
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/media/{tmdb_id}/request-id")
+async def get_media_request_id(
+    tmdb_id: int,
+    media_type: str = "movie",
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Get the request ID for a media item if one exists.
+    Used to resume polling after page refresh.
+    """
+    from src.models import MediaRequest
+    
+    # Find the most recent request for this media
+    media_request = db.query(MediaRequest).filter(
+        MediaRequest.tmdb_id == tmdb_id,
+        MediaRequest.media_type == media_type,
+        MediaRequest.status.in_(['pending', 'downloading', 'processing'])
+    ).order_by(MediaRequest.requested_at.desc()).first()
+    
+    if not media_request:
+        return {"request_id": None}
+    
+    return {"request_id": media_request.id}
 
 
 @app.get("/api/media/{tmdb_id}/season/{season_number}/episodes")

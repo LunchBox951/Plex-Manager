@@ -869,6 +869,51 @@ body {
     z-index: 1;
 }
 
+/* Card progress bar - thin bar at bottom of card */
+.card-progress-bar {
+    position: absolute;
+    bottom: 0;
+    left: 0;
+    width: 100%;
+    height: 4px;
+    background: rgba(0, 0, 0, 0.6);
+    overflow: hidden;
+    z-index: 10;
+    transition: opacity 0.3s ease;
+}
+
+.card-progress-bar.fade-out {
+    opacity: 0;
+    transition: opacity 2s ease;
+}
+
+.card-progress-fill {
+    position: absolute;
+    left: 0;
+    top: 0;
+    height: 100%;
+    background: linear-gradient(90deg, var(--plex-gold), #ffd700);
+    transition: width 0.5s ease;
+    box-shadow: 0 0 8px rgba(229, 160, 13, 0.6);
+}
+
+.card-progress-text {
+    position: absolute;
+    bottom: 8px;
+    left: 50%;
+    transform: translateX(-50%);
+    font-size: 11px;
+    font-weight: 600;
+    color: white;
+    background: rgba(0, 0, 0, 0.85);
+    padding: 4px 12px;
+    border-radius: 12px;
+    white-space: nowrap;
+    text-shadow: 0 1px 2px rgba(0, 0, 0, 0.8);
+    z-index: 11;
+    pointer-events: none;
+}
+
 /* Mobile tap-to-hover support */
 .media-card.force-hover .media-card-overlay {
     opacity: 1;

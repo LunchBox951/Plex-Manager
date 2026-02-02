@@ -141,10 +141,13 @@ class QBittorrentClient:
     def add_magnet(self, magnet_link: str, save_path: str = None, 
                    category: str = None) -> bool:
         """
-        Add a magnet link to qBittorrent.
+        Add a magnet link or .torrent URL to qBittorrent.
+        
+        qBittorrent's API accepts both magnet:// URIs and HTTP(S) URLs to .torrent files.
+        The server will download and parse .torrent files automatically.
         
         Args:
-            magnet_link: Magnet URI to add
+            magnet_link: Magnet URI or HTTP(S) URL to .torrent file
             save_path: Optional custom save path
             category: Optional category (e.g., 'movies', 'tv')
             
@@ -162,10 +165,11 @@ class QBittorrentClient:
         
         if response and response.status_code == 200:
             if response.text == "Ok.":
-                print(f"Successfully added magnet to qBittorrent")
+                link_type = "torrent URL" if magnet_link.startswith('http') else "magnet link"
+                print(f"Successfully added {link_type} to qBittorrent")
                 return True
             else:
-                print(f"Failed to add magnet: {response.text}")
+                print(f"Failed to add torrent: {response.text}")
                 return False
         
         return False

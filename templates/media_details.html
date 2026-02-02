@@ -62,6 +62,16 @@
                         <button class="request-btn" onclick="openRequestModal()">
                             Request {{ media_type|capitalize }}
                         </button>
+                        <div id="downloadProgress" class="download-progress-container" style="display: none;">
+                            <div class="progress-info">
+                                <span id="progressStatus">Downloading</span>
+                                <span id="progressPercent">0%</span>
+                            </div>
+                            <div class="progress-bar-wrapper">
+                                <div id="progressBarFill" class="progress-bar-fill-large" style="width: 0%"></div>
+                            </div>
+                            <div id="progressDetails" class="progress-details"></div>
+                        </div>
                         {% endif %}
                     </div>
                 </div>
@@ -423,7 +433,28 @@
             if (!selectedRetention) return;
             
             const retentionType = selectedRetention.value;
+            
+            // Close modal immediately for better UX
             closeRequestModal();
+            
+            // Update button and progress bar IMMEDIATELY before fetch
+            const requestBtn = document.querySelector('.request-btn');
+            if (requestBtn) {
+                requestBtn.textContent = 'Processing...';
+                requestBtn.classList.add('disabled');
+            }
+            
+            const progressContainer = document.getElementById('downloadProgress');
+            if (progressContainer) {
+                progressContainer.style.display = 'block';
+                const statusEl = document.getElementById('progressStatus');
+                const percentEl = document.getElementById('progressPercent');
+                const fillEl = document.getElementById('progressBarFill');
+                
+                if (statusEl) statusEl.textContent = 'Processing Request';
+                if (percentEl) percentEl.textContent = '0%';
+                if (fillEl) fillEl.style.width = '0%';
+            }
             
             const requestData = {
                 tmdb_id: mediaData.tmdb_id,
@@ -470,16 +501,14 @@
                 const result = await response.json();
                 
                 if (response.ok) {
-                    showToast('Request Submitted', `${mediaData.title} has been added to the download queue`, 'submitted');
+                    console.log('Request submitted successfully, media_request_id:', result.media_request_id);
                     
-                    // Update button to show it's in queue
-                    const requestBtn = document.querySelector('.request-btn');
-                    requestBtn.textContent = 'Request Submitted';
-                    requestBtn.classList.add('disabled');
+                    const submittedToastId = showToast('Request Submitted', `${mediaData.title} has been added to the download queue`, 'submitted');
                     
-                    // Start polling for status
+                    // Force immediate status check, THEN start polling with delay
                     if (result.media_request_id) {
-                        startPolling(result.media_request_id);
+                        await forceStatusCheck(result.media_request_id, submittedToastId);
+                        startPollingWithDelay(result.media_request_id, 5000);
                     }
                 } else {
                     showToast('Request Failed', result.detail || 'Failed to submit request', 'failed');
@@ -490,25 +519,179 @@
             }
         }
 
+        // Force immediate status check
+        async function forceStatusCheck(requestId, submittedToastId) {
+            const toastId = 'toast-' + requestId;
+            const progressContainer = document.getElementById('downloadProgress');
+            const progressBarFill = document.getElementById('progressBarFill');
+            const progressStatus = document.getElementById('progressStatus');
+            const progressPercent = document.getElementById('progressPercent');
+            const progressDetails = document.getElementById('progressDetails');
+            const requestBtn = document.querySelector('.request-btn');
+            
+            try {
+                console.log('Forcing immediate status check for request:', requestId);
+                const response = await fetch(`/api/requests/${requestId}/status`);
+                const data = await response.json();
+                
+                console.log('Immediate status check result:', data);
+                
+                // Update UI based on status
+                if (data.status === 'pending') {
+                    if (progressBarFill) progressBarFill.style.width = '5%';
+                    if (progressStatus) progressStatus.textContent = 'Finding Torrent';
+                    if (progressPercent) progressPercent.textContent = '5%';
+                    if (progressDetails) progressDetails.textContent = 'Searching for best quality...';
+                    if (requestBtn) requestBtn.textContent = 'Finding Torrent...';
+                    
+                    // Remove submitted toast and show finding torrent toast
+                    if (submittedToastId) removeToast(submittedToastId);
+                    updateToast(toastId, 'Processing', `${mediaData.title} - Finding torrent`, 'downloading');
+                } else if (data.status === 'downloading') {
+                    const progress = Math.round(data.progress || 0);
+                    if (progressBarFill) progressBarFill.style.width = `${progress}%`;
+                    if (progressStatus) progressStatus.textContent = 'Downloading';
+                    if (progressPercent) progressPercent.textContent = `${progress}%`;
+                    if (requestBtn) requestBtn.textContent = 'Downloading';
+                    
+                    // Remove submitted toast and show downloading toast
+                    if (submittedToastId) removeToast(submittedToastId);
+                    updateToast(toastId, 'Downloading', `${mediaData.title} - ${progress}%`, 'downloading');
+                } else if (data.status === 'processing') {
+                    if (progressBarFill) progressBarFill.style.width = '100%';
+                    if (progressStatus) progressStatus.textContent = 'Finalizing...';
+                    if (progressPercent) progressPercent.textContent = '100%';
+                    if (progressDetails) progressDetails.textContent = 'Copying files to Plex';
+                    if (requestBtn) requestBtn.textContent = 'Finalizing...';
+                    
+                    // Remove submitted toast and show processing toast
+                    if (submittedToastId) removeToast(submittedToastId);
+                    updateToast(toastId, 'Processing', `${mediaData.title} - Copying files to Plex`, 'downloading');
+                }
+            } catch (error) {
+                console.error('Force status check failed:', error);
+                // Keep the "Processing..." state on error
+            }
+        }
+
+        // Start polling with delay
+        function startPollingWithDelay(requestId, delayMs) {
+            console.log(`Starting polling in ${delayMs}ms for request:`, requestId);
+            
+            setTimeout(() => {
+                startPolling(requestId);
+            }, delayMs);
+        }
+
         // Start status polling
         function startPolling(requestId) {
-            if (activePoll) return;
+            if (activePoll) {
+                console.log('Already polling, clearing existing interval');
+                clearInterval(activePoll);
+            }
+            
+            console.log('Starting polling for request ID:', requestId);
             
             const toastId = 'toast-' + requestId;
+            const progressContainer = document.getElementById('downloadProgress');
+            const progressBarFill = document.getElementById('progressBarFill');
+            const progressStatus = document.getElementById('progressStatus');
+            const progressPercent = document.getElementById('progressPercent');
+            const progressDetails = document.getElementById('progressDetails');
             
-            activePoll = setInterval(async () => {
+            // Track last status to avoid repeated notifications
+            let lastStatus = null;
+            
+            // Show progress container
+            if (progressContainer) {
+                progressContainer.style.display = 'block';
+            }
+            
+            // Do first poll immediately
+            pollStatus();
+            
+            // Then poll every 10 seconds
+            activePoll = setInterval(pollStatus, 10000);
+            
+            async function pollStatus() {
                 try {
+                    console.log('Polling status for request:', requestId);
                     const response = await fetch(`/api/requests/${requestId}/status`);
                     const data = await response.json();
                     
-                    if (data.status === 'downloading') {
-                        updateToast(toastId, 'Downloading', `${mediaData.title} - ${data.progress}%`, 'downloading');
+                    console.log('Received status:', data);
+                    
+                    if (data.status === 'pending') {
+                        // Show pending state
+                        if (progressBarFill) progressBarFill.style.width = '0%';
+                        if (progressStatus) progressStatus.textContent = 'Finding Torrent';
+                        if (progressPercent) progressPercent.textContent = '0%';
+                        if (progressDetails) progressDetails.textContent = 'Searching for best quality...';
+                        
+                        // Update button to show processing
+                        const requestBtn = document.querySelector('.request-btn');
+                        if (requestBtn) requestBtn.textContent = 'Processing...';
+                        
+                        // Only update toast if status changed
+                        if (lastStatus !== 'pending') {
+                            updateToast(toastId, 'Processing', `${mediaData.title} - Finding torrent`, 'downloading');
+                            lastStatus = 'pending';
+                        }
+                    } else if (data.status === 'downloading') {
+                        const progress = Math.round(data.progress || 0);
+                        
+                        console.log('Downloading - updating progress bar to:', progress + '%');
+                        
+                        // Update progress bar (always update, even if status hasn't changed)
+                        if (progressBarFill) {
+                            progressBarFill.style.width = `${progress}%`;
+                            console.log('Progress bar fill updated to:', progressBarFill.style.width);
+                        }
+                        if (progressStatus) progressStatus.textContent = 'Downloading';
+                        if (progressPercent) progressPercent.textContent = `${progress}%`;
+                        
+                        // Update details if speed/ETA available
+                        if (progressDetails && data.download_speed) {
+                            const speedMB = (data.download_speed / 1024 / 1024).toFixed(1);
+                            let detailText = `${speedMB} MB/s`;
+                            if (data.eta && data.eta > 0) {
+                                const minutes = Math.floor(data.eta / 60);
+                                detailText += ` • ${minutes}m remaining`;
+                            }
+                            progressDetails.textContent = detailText;
+                        }
+                        
+                        // Update button to show downloading
+                        const requestBtn = document.querySelector('.request-btn');
+                        if (requestBtn && requestBtn.textContent !== 'Downloading') {
+                            requestBtn.textContent = 'Downloading';
+                        }
+                        
+                        // Always update toast with current progress (remove status check)
+                        updateToast(toastId, 'Downloading', `${mediaData.title} - ${progress}%`, 'downloading');
+                        lastStatus = 'downloading';
                     } else if (data.status === 'processing') {
-                        updateToast(toastId, 'Processing', `${mediaData.title} - Copying files to Plex`, 'downloading');
+                        // Show 100% with "Finalizing" text
+                        if (progressBarFill) progressBarFill.style.width = '100%';
+                        if (progressStatus) progressStatus.textContent = 'Finalizing...';
+                        if (progressPercent) progressPercent.textContent = '100%';
+                        if (progressDetails) progressDetails.textContent = 'Copying files to Plex';
+                        
+                        // Only update toast if status changed
+                        if (lastStatus !== 'processing') {
+                            updateToast(toastId, 'Processing', `${mediaData.title} - Copying files to Plex`, 'downloading');
+                            lastStatus = 'processing';
+                        }
                     } else if (data.status === 'available') {
-                        updateToast(toastId, 'Available', `${mediaData.title} is ready in Plex!`, 'available');
+                        if (lastStatus !== 'available') {
+                            updateToast(toastId, 'Available', `${mediaData.title} is ready in Plex!`, 'available');
+                            lastStatus = 'available';
+                        }
                         clearInterval(activePoll);
                         activePoll = null;
+                        
+                        // Hide progress bar
+                        if (progressContainer) progressContainer.style.display = 'none';
                         
                         // Update button
                         const requestBtn = document.querySelector('.request-btn');
@@ -517,21 +700,27 @@
                         // Auto-close toast
                         setTimeout(() => removeToast(toastId), 5000);
                     } else if (data.status === 'failed') {
-                        updateToast(toastId, 'Failed', `${mediaData.title} download failed`, 'failed');
+                        if (lastStatus !== 'failed') {
+                            updateToast(toastId, 'Failed', `${mediaData.title} download failed`, 'failed');
+                            lastStatus = 'failed';
+                        }
                         clearInterval(activePoll);
                         activePoll = null;
+                        
+                        // Hide progress bar
+                        if (progressContainer) progressContainer.style.display = 'none';
                     }
                 } catch (error) {
                     console.error('Polling error:', error);
                 }
-            }, 10000);
+            }
         }
 
         // Toast functions
-        function showToast(title, message, status) {
+        function showToast(title, message, status, customToastId = null) {
             const container = document.getElementById('toastContainer');
             const toast = document.createElement('div');
-            const toastId = 'toast-' + Date.now();
+            const toastId = customToastId || ('toast-' + Date.now());
             toast.id = toastId;
             toast.className = `toast ${status}`;
             
@@ -551,7 +740,8 @@
         function updateToast(toastId, title, message, status) {
             const toast = document.getElementById(toastId);
             if (!toast) {
-                showToast(title, message, status);
+                // Create toast with the specified ID instead of generating a new random one
+                showToast(title, message, status, toastId);
                 return;
             }
             
@@ -569,11 +759,46 @@
             }
         }
 
+        // Check for existing request on page load
+        async function checkExistingRequest() {
+            if (mediaData.in_library) return;
+            
+            try {
+                const response = await fetch(`/api/media/${mediaData.tmdb_id}/status?media_type=${mediaData.media_type}`);
+                const data = await response.json();
+                
+                if (data.state !== 'unrequested' && data.state !== 'available') {
+                    // There's an active request
+                    const requestBtn = document.querySelector('.request-btn');
+                    const progressContainer = document.getElementById('downloadProgress');
+                    
+                    if (requestBtn) {
+                        requestBtn.textContent = 'Request in Progress';
+                        requestBtn.classList.add('disabled');
+                    }
+                    
+                    if (progressContainer) {
+                        progressContainer.style.display = 'block';
+                    }
+                    
+                    // Start polling if we have a request_id
+                    if (data.request_id) {
+                        startPolling(data.request_id);
+                    }
+                }
+            } catch (error) {
+                console.error('Error checking existing request:', error);
+            }
+        }
+        
         // Logout function
         function logout() {
             document.cookie = 'access_token=; expires=Thu, 01 Jan 1970 00:00:00 UTC; path=/;';
             window.location.href = '/';
         }
+        
+        // Check for existing requests when page loads
+        window.addEventListener('DOMContentLoaded', checkExistingRequest);
     </script>
 </body>
 </html>

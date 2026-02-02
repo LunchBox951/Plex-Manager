@@ -502,17 +502,43 @@
             // Insert the image at the beginning
             card.insertBefore(img, card.firstChild);
             
-            // Add hover handler for status checking
+            // Add hover handler for status checking with polling
             let hoverTimeout;
+            let fadeTimeout;
             card.addEventListener('mouseenter', function() {
                 // Delay status check slightly to avoid excessive API calls
-                hoverTimeout = setTimeout(() => {
-                    updateCardStatus(tmdbId, mediaType, overlayButtonId);
+                hoverTimeout = setTimeout(async () => {
+                    await updateCardStatus(tmdbId, mediaType, overlayButtonId);
+                    
+                    // Check if status is active (downloading/pending/processing)
+                    const cacheKey = `${tmdbId}-${mediaType}`;
+                    const cached = statusCache.get(cacheKey);
+                    if (cached && ['downloading', 'pending', 'processing'].includes(cached.data?.state)) {
+                        startCardPolling(card, tmdbId, mediaType, overlayButtonId);
+                    }
                 }, 200);
+                
+                // Clear any pending fade timeout
+                if (fadeTimeout) {
+                    clearTimeout(fadeTimeout);
+                    fadeTimeout = null;
+                }
             });
             
             card.addEventListener('mouseleave', function() {
                 if (hoverTimeout) clearTimeout(hoverTimeout);
+                
+                // Stop polling
+                stopCardPolling(tmdbId, mediaType);
+                
+                // Fade out progress bar after 2 seconds
+                fadeTimeout = setTimeout(() => {
+                    const progressBar = card.querySelector('.card-progress-bar');
+                    if (progressBar && !progressBar.classList.contains('fade-out')) {
+                        progressBar.classList.add('fade-out');
+                        setTimeout(() => progressBar.remove(), 2000);
+                    }
+                }, 2000);
             });
             
             // Mobile: tap to toggle overlay, second tap to navigate
@@ -549,10 +575,13 @@
             const cacheKey = `${tmdbId}-${mediaType}`;
             const now = Date.now();
             
-            // Check cache
+            // Check cache - bypass for active download states
             if (statusCache.has(cacheKey)) {
                 const cached = statusCache.get(cacheKey);
-                if (now - cached.timestamp < STATUS_CACHE_TTL) {
+                const isActiveState = ['downloading', 'pending', 'processing'].includes(cached.data?.state);
+                
+                // Use cache only if not expired AND not an active download state
+                if (now - cached.timestamp < STATUS_CACHE_TTL && !isActiveState) {
                     renderCardStatus(buttonId, cached.data);
                     return;
                 }
@@ -569,14 +598,6 @@
                 });
                 
                 renderCardStatus(buttonId, data);
-                
-                // If downloading, poll for updates
-                if (data.state === 'downloading' || data.state === 'pending' || data.state === 'verifying') {
-                    setTimeout(() => {
-                        statusCache.delete(cacheKey); // Invalidate cache
-                        updateCardStatus(tmdbId, mediaType, buttonId);
-                    }, 10000); // Poll every 10 seconds for active downloads
-                }
             } catch (error) {
                 console.error('Failed to fetch media status:', error);
             }
@@ -587,36 +608,96 @@
             const button = document.getElementById(buttonId);
             if (!button) return;
             
+            const card = button.closest('.media-card');
+            console.log('Rendering card status:', status);
             let html = '';
             
             switch (status.state) {
                 case 'unrequested':
-                    html = `<button class="quick-request-btn" onclick="event.stopPropagation(); openQuickRequest(${button.closest('.media-card').dataset.tmdbId}, '${button.closest('.media-card').dataset.mediaType}', '${status.title.replace(/'/g, "\\'")}')">Request</button>`;
+                    html = `<button class="quick-request-btn" onclick="event.stopPropagation(); openQuickRequest(${card.dataset.tmdbId}, '${card.dataset.mediaType}', '${status.title.replace(/'/g, "\\'")}')">Request</button>`;
+                    removeCardProgressBar(card);
                     break;
                 case 'pending':
                     html = '<div class="status-indicator">Processing</div>';
+                    renderCardProgressBar(card, 5, 'Finding Torrent');
                     break;
                 case 'downloading':
-                    html = `
-                        <div class="status-indicator">Downloading</div>
-                        <div class="progress-bar-container">
-                            <div class="progress-bar-fill" style="width: ${status.progress}%"></div>
-                            <div class="progress-bar-text">${status.progress}%</div>
-                        </div>
-                    `;
+                    html = '<div class="status-indicator">Downloading ' + Math.round(status.progress) + '%</div>';
+                    renderCardProgressBar(card, status.progress, 'Downloading');
                     break;
                 case 'verifying':
-                    html = '<div class="status-indicator">Verifying</div>';
+                    html = '<div class="status-indicator">Finalizing...</div>';
+                    renderCardProgressBar(card, 100, 'Finalizing');
                     break;
                 case 'available':
                     html = '<div class="status-indicator available">✓ Available</div>';
+                    removeCardProgressBar(card);
                     break;
                 case 'failed':
                     html = '<div class="status-indicator failed">✗ Failed</div>';
+                    removeCardProgressBar(card);
                     break;
             }
             
             button.innerHTML = html;
+        }
+        
+        // Render thin progress bar at bottom of card
+        function renderCardProgressBar(card, progress, statusText) {
+            if (!card) return;
+            
+            // Remove existing progress bar
+            const existing = card.querySelector('.card-progress-bar');
+            if (existing) existing.remove();
+            
+            // Create progress bar element
+            const progressBar = document.createElement('div');
+            progressBar.className = 'card-progress-bar';
+            progressBar.innerHTML = `
+                <div class="card-progress-fill" style="width: ${progress}%"></div>
+                <div class="card-progress-text">${statusText} ${Math.round(progress)}%</div>
+            `;
+            
+            card.appendChild(progressBar);
+        }
+        
+        // Remove progress bar from card
+        function removeCardProgressBar(card) {
+            if (!card) return;
+            const progressBar = card.querySelector('.card-progress-bar');
+            if (progressBar) {
+                progressBar.classList.add('fade-out');
+                setTimeout(() => progressBar.remove(), 2000); // Remove after 2s fade
+            }
+        }
+        
+        // Track active card polling intervals
+        const cardPollingIntervals = new Map();
+        
+        // Start hover-based polling for a card
+        function startCardPolling(card, tmdbId, mediaType, buttonId) {
+            const pollKey = `${tmdbId}-${mediaType}`;
+            
+            // Don't start if already polling
+            if (cardPollingIntervals.has(pollKey)) return;
+            
+            // Poll every 5 seconds while hovering
+            const interval = setInterval(async () => {
+                await updateCardStatus(tmdbId, mediaType, buttonId);
+            }, 5000);
+            
+            cardPollingIntervals.set(pollKey, interval);
+        }
+        
+        // Stop card polling
+        function stopCardPolling(tmdbId, mediaType) {
+            const pollKey = `${tmdbId}-${mediaType}`;
+            const interval = cardPollingIntervals.get(pollKey);
+            
+            if (interval) {
+                clearInterval(interval);
+                cardPollingIntervals.delete(pollKey);
+            }
         }
         
         // Setup search functionality
@@ -762,6 +843,16 @@
             
             closeRetentionModal();
             
+            // Update card status IMMEDIATELY before fetch
+            const card = document.querySelector(`[data-tmdb-id="${currentMediaRequest.tmdbId}"][data-media-type="${currentMediaRequest.mediaType}"]`);
+            if (card) {
+                const overlayButtonId = `overlay-btn-${currentMediaRequest.tmdbId}-${currentMediaRequest.mediaType}`;
+                const button = document.getElementById(overlayButtonId);
+                if (button) {
+                    button.innerHTML = '<div class="status-indicator">Processing...</div>';
+                }
+            }
+            
             const requestData = {
                 tmdb_id: currentMediaRequest.tmdbId,
                 media_type: currentMediaRequest.mediaType,
@@ -783,11 +874,20 @@
                 const result = await response.json();
                 
                 if (response.ok) {
-                    showToast('Request Submitted', `${currentMediaRequest.title} has been added to the download queue`, 'submitted');
+                    // Invalidate cache immediately
+                    const cacheKey = `${currentMediaRequest.tmdbId}-${currentMediaRequest.mediaType}`;
+                    statusCache.delete(cacheKey);
                     
-                    // Start polling for status
+                    const submittedToastId = showToast('Request Submitted', `${currentMediaRequest.title} has been added to the download queue`, 'submitted');
+                    
+                    // Force immediate status check, THEN start polling with delay
                     if (result.media_request_id) {
-                        startPolling(result.media_request_id, currentMediaRequest.title);
+                        await forceCardStatusCheck(currentMediaRequest.tmdbId, currentMediaRequest.mediaType);
+                        // Store submitted toast ID to remove it later
+                        setTimeout(() => {
+                            removeToast(submittedToastId);
+                            startPolling(result.media_request_id, currentMediaRequest.title);
+                        }, 5000);
                     }
                 } else {
                     showToast('Request Failed', result.detail || 'Failed to submit request', 'failed');
@@ -796,6 +896,17 @@
                 console.error('Request failed:', error);
                 showToast('Request Failed', 'Network error occurred', 'failed');
             }
+        }
+        
+        // Force immediate card status check
+        async function forceCardStatusCheck(tmdbId, mediaType) {
+            // Clear cache to force fresh data
+            const cacheKey = `${tmdbId}-${mediaType}`;
+            statusCache.delete(cacheKey);
+            
+            // Force status update
+            const overlayButtonId = `overlay-btn-${tmdbId}-${mediaType}`;
+            await updateCardStatus(tmdbId, mediaType, overlayButtonId);
         }
         
         // Start status polling
@@ -810,16 +921,20 @@
                     const data = await response.json();
                     
                     if (data.status === 'downloading') {
-                        updateToast(toastId, 'Downloading', `${title} - ${data.progress}%`, 'downloading');
+                        const progress = Math.round(data.progress || 0);
+                        updateToast(toastId, 'Downloading', `${title} - ${progress}%`, 'downloading');
                     } else if (data.status === 'processing') {
                         updateToast(toastId, 'Processing', `${title} - Copying files to Plex`, 'downloading');
                     } else if (data.status === 'available') {
-                        updateToast(toastId, 'Available', `${title} is ready in Plex!`, 'available');
+                        // Remove downloading/processing toast
+                        removeToast(toastId);
+                        
+                        // Show available toast (won't auto-close)
+                        const availableToastId = 'toast-available-' + requestId;
+                        updateToast(availableToastId, 'Available', `${title} is ready in Plex!`, 'available');
+                        
                         clearInterval(poll);
                         activePolls.delete(requestId);
-                        
-                        // Auto-close after 5 seconds
-                        setTimeout(() => removeToast(toastId), 5000);
                     } else if (data.status === 'failed') {
                         updateToast(toastId, 'Failed', `${title} download failed`, 'failed');
                         clearInterval(poll);
@@ -834,10 +949,10 @@
         }
         
         // Show toast notification
-        function showToast(title, message, status) {
+        function showToast(title, message, status, customToastId = null) {
             const container = document.getElementById('toastContainer');
             const toast = document.createElement('div');
-            const toastId = 'toast-' + Date.now();
+            const toastId = customToastId || ('toast-' + Date.now());
             toast.id = toastId;
             toast.className = `toast ${status}`;
             
@@ -859,7 +974,8 @@
         function updateToast(toastId, title, message, status) {
             const toast = document.getElementById(toastId);
             if (!toast) {
-                showToast(title, message, status);
+                // Create toast with the specified ID instead of generating a new random one
+                showToast(title, message, status, toastId);
                 return;
             }
             
