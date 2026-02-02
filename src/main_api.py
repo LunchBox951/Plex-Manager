@@ -5,8 +5,10 @@ Handles routing, middleware, and application lifecycle.
 
 import os
 import logging
+import datetime
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, Request, Depends, HTTPException
+from typing import Optional
+from fastapi import FastAPI, Request, Depends, HTTPException, Query
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -174,15 +176,6 @@ async def landing_page(request: Request):
     return templates.TemplateResponse("landing.html", {"request": request})
 
 
-# Dashboard route (redirects to homepage)
-@app.get("/dashboard", response_class=HTMLResponse)
-async def dashboard(request: Request):
-    """
-    Redirect dashboard to new homepage.
-    """
-    return RedirectResponse(url="/home", status_code=302)
-
-
 # Health check endpoint
 @app.get("/api/health")
 async def health_check():
@@ -208,7 +201,7 @@ async def home_page(request: Request, db: Session = Depends(get_db)):
         # Render homepage template
         return templates.TemplateResponse(
             "homepage.html",
-            {"request": request, "user": user}
+            {"request": request, "user": user, "current_page": "home"}
         )
     except Exception as e:
         print(f"Homepage access failed: {e}")
@@ -513,7 +506,8 @@ async def media_details_page(
                 "user": user,
                 "media": media_data,
                 "media_type": media_type,
-                "tmdb_id": tmdb_id
+                "tmdb_id": tmdb_id,
+                "current_page": "home"
             }
         )
         
@@ -707,3 +701,326 @@ async def get_season_episodes(
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============================================================================
+# Dashboard & System Pages
+# ============================================================================
+
+@app.get("/dashboard", response_class=HTMLResponse)
+async def system_dashboard(
+    request: Request,
+    user: User = Depends(get_current_user)
+):
+    """
+    System dashboard showing disk usage, transfer stats, and service health.
+    """
+    return templates.TemplateResponse("dashboard.html", {
+        "request": request,
+        "user": user,
+        "current_page": "dashboard"
+    })
+
+
+@app.get("/downloads-view", response_class=HTMLResponse)
+async def downloads_view(
+    request: Request,
+    user: User = Depends(get_current_user)
+):
+    """
+    Active downloads page showing all torrents with filtering and sorting.
+    """
+    return templates.TemplateResponse("active_downloads.html", {
+        "request": request,
+        "user": user,
+        "current_page": "downloads"
+    })
+
+
+@app.get("/external/plex")
+async def redirect_plex(user: User = Depends(get_current_user)):
+    """
+    Redirect to Plex web interface.
+    """
+    plex_url = os.getenv('PLEX_URL', 'http://localhost:32400')
+    return RedirectResponse(url=f"{plex_url}/web", status_code=302)
+
+
+@app.get("/external/prowlarr")
+async def redirect_prowlarr(user: User = Depends(get_current_user)):
+    """
+    Redirect to Prowlarr web interface.
+    """
+    prowlarr_url = os.getenv('PROWLARR_URL', 'http://localhost:9696')
+    return RedirectResponse(url=prowlarr_url, status_code=302)
+
+
+@app.get("/external/qbittorrent")
+async def redirect_qbittorrent(user: User = Depends(get_current_user)):
+    """
+    Redirect to qBittorrent web interface.
+    """
+    qbit_url = os.getenv('QBITTORRENT_URL', 'http://localhost:8080')
+    return RedirectResponse(url=qbit_url, status_code=302)
+
+
+# ============================================================================
+# Dashboard API Endpoints
+# ============================================================================
+
+@app.get("/api/system/disk-usage")
+async def get_disk_usage(
+    request: Request,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Get disk usage information for downloads, TV, and movies directories.
+    Handles deduplication if directories are on the same partition.
+    """
+    try:
+        import psutil
+        
+        paths = {
+            'downloads': os.getenv('DOWNLOADS_PATH'),
+            'tv': os.getenv('TV_PATH'),
+            'movies': os.getenv('MOVIES_PATH')
+        }
+        
+        # Track unique partitions to avoid duplication
+        partitions_seen = {}
+        disk_info = []
+        
+        for name, path in paths.items():
+            if not path or not os.path.exists(path):
+                logger.warning(f"Path '{name}' not found: {path}")
+                continue
+            
+            try:
+                # Get disk usage for this path
+                usage = psutil.disk_usage(path)
+                
+                # Get the partition/mount point
+                # On Windows, this returns the drive letter
+                # On Unix, this returns the mount point
+                if os.name == 'nt':
+                    # Windows: get drive letter (e.g., 'C:')
+                    partition = os.path.splitdrive(path)[0]
+                    if not partition:
+                        partition = path
+                else:
+                    # Unix: get mount point
+                    partition = os.path.realpath(path)
+                
+                # Check if we've already seen this partition
+                if partition in partitions_seen:
+                    # Add path to existing partition entry
+                    partitions_seen[partition]['paths'].append(name)
+                else:
+                    # New partition
+                    partition_info = {
+                        'partition': partition,
+                        'paths': [name],
+                        'total_bytes': usage.total,
+                        'used_bytes': usage.used,
+                        'free_bytes': usage.free,
+                        'percent_used': usage.percent,
+                        'total_gb': round(usage.total / (1024**3), 2),
+                        'used_gb': round(usage.used / (1024**3), 2),
+                        'free_gb': round(usage.free / (1024**3), 2),
+                        'warning_level': 'critical' if usage.percent > 90 else 'warning' if usage.percent > 80 else 'normal'
+                    }
+                    partitions_seen[partition] = partition_info
+                    disk_info.append(partition_info)
+            except Exception as path_error:
+                logger.error(f"Error getting disk usage for {name} ({path}): {path_error}")
+                continue
+        
+        return {
+            "disk_usage": disk_info,
+            "timestamp": datetime.datetime.now().isoformat()
+        }
+        
+    except Exception as e:
+        logger.error(f"Failed to get disk usage: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/system/transfer-stats")
+async def get_transfer_stats(
+    request: Request,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Get global transfer statistics from qBittorrent.
+    """
+    try:
+        # Get global transfer info
+        # Note: This requires qBittorrent API endpoint /api/v2/transfer/info
+        # We'll use requests directly since it may not be in the client wrapper
+        import requests
+        
+        qbit_url = os.getenv('QBITTORRENT_URL')
+        username = os.getenv('QBITTORRENT_USERNAME')
+        password = os.getenv('QBITTORRENT_PASSWORD')
+        
+        if not qbit_url or not username or not password:
+            raise HTTPException(status_code=500, detail="qBittorrent configuration missing")
+        
+        # Login to qBittorrent
+        session = requests.Session()
+        login_resp = session.post(f"{qbit_url}/api/v2/auth/login", data={
+            'username': username,
+            'password': password
+        }, timeout=5)
+        
+        if login_resp.text != 'Ok.':
+            raise HTTPException(status_code=500, detail="qBittorrent authentication failed")
+        
+        # Get transfer info
+        response = session.get(f"{qbit_url}/api/v2/transfer/info", timeout=5)
+        response.raise_for_status()
+        transfer_info = response.json()
+        
+        # Get torrent counts by status
+        torrents_response = session.get(f"{qbit_url}/api/v2/torrents/info", timeout=5)
+        torrents = torrents_response.json() if torrents_response.ok else []
+        
+        # Count by status
+        status_counts = {
+            'downloading': 0,
+            'seeding': 0,
+            'paused': 0,
+            'error': 0,
+            'total': len(torrents)
+        }
+        
+        for torrent in torrents:
+            state = torrent.get('state', '').lower()
+            if 'downloading' in state or 'downloading' in state:
+                status_counts['downloading'] += 1
+            elif 'seeding' in state or 'uploading' in state:
+                status_counts['seeding'] += 1
+            elif 'paused' in state:
+                status_counts['paused'] += 1
+            elif 'error' in state or 'missing' in state:
+                status_counts['error'] += 1
+        
+        return {
+            "dl_speed": transfer_info.get('dl_info_speed', 0),  # bytes/s
+            "up_speed": transfer_info.get('up_info_speed', 0),  # bytes/s
+            "dl_total": transfer_info.get('dl_info_data', 0),   # bytes
+            "up_total": transfer_info.get('up_info_data', 0),   # bytes
+            "dl_speed_mbps": round(transfer_info.get('dl_info_speed', 0) / (1024**2), 2),
+            "up_speed_mbps": round(transfer_info.get('up_info_speed', 0) / (1024**2), 2),
+            "dl_total_gb": round(transfer_info.get('dl_info_data', 0) / (1024**3), 2),
+            "up_total_gb": round(transfer_info.get('up_info_data', 0) / (1024**3), 2),
+            "status_counts": status_counts,
+            "timestamp": datetime.datetime.now().isoformat()
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to get transfer stats: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/system/health-check")
+async def system_health_check(
+    request: Request,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Check connectivity to Plex, Prowlarr, and qBittorrent services.
+    """
+    services = {}
+    
+    # Check Plex
+    try:
+        from src.plex import get_plex_server
+        plex = get_plex_server()
+        services['plex'] = {
+            'status': 'online',
+            'url': os.getenv('PLEX_URL'),
+            'version': plex.version if hasattr(plex, 'version') else 'unknown'
+        }
+    except Exception as e:
+        services['plex'] = {
+            'status': 'offline',
+            'url': os.getenv('PLEX_URL'),
+            'error': str(e)
+        }
+    
+    # Check Prowlarr
+    try:
+        import requests
+        prowlarr_url = os.getenv('PROWLARR_URL')
+        prowlarr_key = os.getenv('PROWLARR_API_KEY')
+        response = requests.get(
+            f"{prowlarr_url}/api/v1/system/status",
+            headers={'X-Api-Key': prowlarr_key},
+            timeout=5
+        )
+        response.raise_for_status()
+        data = response.json()
+        services['prowlarr'] = {
+            'status': 'online',
+            'url': prowlarr_url,
+            'version': data.get('version', 'unknown')
+        }
+    except Exception as e:
+        services['prowlarr'] = {
+            'status': 'offline',
+            'url': os.getenv('PROWLARR_URL'),
+            'error': str(e)
+        }
+    
+    # Check qBittorrent
+    try:
+        import requests
+        qbit_url = os.getenv('QBITTORRENT_URL')
+        username = os.getenv('QBITTORRENT_USERNAME')
+        password = os.getenv('QBITTORRENT_PASSWORD')
+        
+        session = requests.Session()
+        login_response = session.post(f"{qbit_url}/api/v2/auth/login", data={
+            'username': username,
+            'password': password
+        }, timeout=5)
+        
+        if login_response.text == 'Ok.':
+            version_response = session.get(f"{qbit_url}/api/v2/app/version", timeout=5)
+            services['qbittorrent'] = {
+                'status': 'online',
+                'url': qbit_url,
+                'version': version_response.text.strip('v"') if version_response.ok else 'unknown'
+            }
+        else:
+            services['qbittorrent'] = {
+                'status': 'offline',
+                'url': qbit_url,
+                'error': 'Authentication failed'
+            }
+    except Exception as e:
+        services['qbittorrent'] = {
+            'status': 'offline',
+            'url': os.getenv('QBITTORRENT_URL'),
+            'error': str(e)
+        }
+    
+    return {
+        "services": services,
+        "timestamp": datetime.datetime.now().isoformat()
+    }
+
+
+# NOTE: /api/downloads/active and /api/downloads/test have been moved to downloads.py router
+# They are now at /api/downloads/active and /api/downloads/test via the downloads_router
+# This was necessary to fix route conflict with /api/downloads/{download_id}

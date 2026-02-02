@@ -1,73 +1,522 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Dashboard - Plex Manager</title>
-    <link rel="stylesheet" href="/static/css/landing.css">
-</head>
-<body>
-    <div class="dashboard">
-        <header class="dashboard-header">
-            <div class="header-content">
-                <h1>Plex Manager</h1>
-                <div class="user-info">
-                    <img src="{{ user.avatar_url or '/static/img/default-avatar.png' }}" alt="Avatar" class="user-avatar">
-                    <span class="username">{{ user.username }}</span>
-                    {% if user.is_admin %}
-                    <span class="admin-badge">Admin</span>
-                    {% endif %}
-                    <button onclick="logout()" class="logout-btn">Logout</button>
-                </div>
-            </div>
-        </header>
-        
-        <main class="dashboard-main">
-            <div class="welcome-section">
-                <h2>Welcome, {{ user.username }}! 👋</h2>
-                <p>Your Plex Manager dashboard is coming soon.</p>
-                
-                <div class="info-card">
-                    <h3>Account Information</h3>
-                    <ul>
-                        <li><strong>Username:</strong> {{ user.username }}</li>
-                        <li><strong>Email:</strong> {{ user.email or 'Not provided' }}</li>
-                        <li><strong>Permissions:</strong> 
-                            {% if user.is_admin %}
-                                Administrator
-                            {% else %}
-                                Media Requests
-                            {% endif %}
-                        </li>
-                        <li><strong>Member since:</strong> {{ user.created_at.strftime('%B %d, %Y') if user.created_at else 'Unknown' }}</li>
-                    </ul>
-                </div>
-                
-                <div class="info-card">
-                    <h3>🚧 Under Construction</h3>
-                    <p>The React-based dashboard with media search, request management, and admin features is currently in development.</p>
-                    <p>Stay tuned for updates!</p>
-                </div>
-            </div>
-        </main>
-    </div>
-    
-    <script>
-        async function logout() {
-            try {
-                const response = await fetch('/api/auth/logout', {
-                    method: 'POST',
-                    credentials: 'include'
-                });
-                
-                if (response.ok) {
-                    window.location.href = '/';
-                }
-            } catch (error) {
-                console.error('Logout error:', error);
-                alert('Failed to logout');
-            }
+{% extends "base.html" %}
+
+{% block title %}Dashboard - Plex Manager{% endblock %}
+
+{% block extra_css %}
+<style>
+    :root {
+        --plex-gold: #E5A00D;
+        --plex-dark: #282A2D;
+        --plex-darker: #1A1B1D;
+        --plex-light: #CCCCCC;
+        --plex-white: #FFFFFF;
+    }
+
+    body {
+        margin: 0;
+        padding: 0;
+        background: var(--plex-darker);
+        color: var(--plex-white);
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+    }
+
+    .dashboard-container {
+        padding: 80px 40px 40px 40px;
+        max-width: 1400px;
+        margin: 0 auto;
+    }
+
+    .dashboard-header {
+        margin-bottom: 40px;
+    }
+
+    .dashboard-title {
+        font-size: 36px;
+        font-weight: bold;
+        color: var(--plex-gold);
+        margin: 0 0 10px 0;
+    }
+
+    .dashboard-subtitle {
+        font-size: 16px;
+        color: var(--plex-light);
+        margin: 0;
+    }
+
+    .stats-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+        gap: 20px;
+        margin-bottom: 40px;
+    }
+
+    .stat-card {
+        background: var(--plex-dark);
+        border-radius: 12px;
+        padding: 24px;
+        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+        transition: transform 0.2s ease, box-shadow 0.2s ease;
+    }
+
+    .stat-card:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 6px 16px rgba(0, 0, 0, 0.4);
+    }
+
+    .stat-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        margin-bottom: 16px;
+    }
+
+    .stat-icon {
+        font-size: 32px;
+    }
+
+    .stat-label {
+        font-size: 14px;
+        color: var(--plex-light);
+        text-transform: uppercase;
+        letter-spacing: 1px;
+    }
+
+    .stat-value {
+        font-size: 32px;
+        font-weight: bold;
+        color: var(--plex-white);
+        margin: 8px 0;
+    }
+
+    .stat-detail {
+        font-size: 13px;
+        color: var(--plex-light);
+        margin-top: 8px;
+    }
+
+    .section-title {
+        font-size: 24px;
+        font-weight: bold;
+        color: var(--plex-gold);
+        margin: 40px 0 20px 0;
+        display: flex;
+        align-items: center;
+        gap: 12px;
+    }
+
+    .disk-usage-section {
+        margin-bottom: 40px;
+    }
+
+    .disk-card {
+        background: var(--plex-dark);
+        border-radius: 12px;
+        padding: 24px;
+        margin-bottom: 20px;
+        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+    }
+
+    .disk-card.warning {
+        border-left: 4px solid #ff9800;
+    }
+
+    .disk-card.critical {
+        border-left: 4px solid #f44336;
+    }
+
+    .disk-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 16px;
+    }
+
+    .disk-partition {
+        font-size: 18px;
+        font-weight: bold;
+        color: var(--plex-white);
+    }
+
+    .disk-paths {
+        font-size: 13px;
+        color: var(--plex-light);
+        margin-top: 4px;
+    }
+
+    .disk-stats {
+        display: flex;
+        gap: 24px;
+        flex-wrap: wrap;
+    }
+
+    .disk-stat {
+        flex: 1;
+        min-width: 150px;
+    }
+
+    .disk-stat-label {
+        font-size: 12px;
+        color: var(--plex-light);
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+    }
+
+    .disk-stat-value {
+        font-size: 20px;
+        font-weight: bold;
+        color: var(--plex-white);
+        margin-top: 4px;
+    }
+
+    .progress-bar {
+        width: 100%;
+        height: 12px;
+        background: rgba(255, 255, 255, 0.1);
+        border-radius: 6px;
+        overflow: hidden;
+        margin: 16px 0;
+    }
+
+    .progress-fill {
+        height: 100%;
+        background: linear-gradient(90deg, var(--plex-gold), #f0b020);
+        border-radius: 6px;
+        transition: width 0.3s ease;
+    }
+
+    .progress-fill.warning {
+        background: linear-gradient(90deg, #ff9800, #ffb74d);
+    }
+
+    .progress-fill.critical {
+        background: linear-gradient(90deg, #f44336, #ef5350);
+    }
+
+    .services-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+        gap: 20px;
+        margin-bottom: 40px;
+    }
+
+    .service-card {
+        background: var(--plex-dark);
+        border-radius: 12px;
+        padding: 24px;
+        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+    }
+
+    .service-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        margin-bottom: 12px;
+    }
+
+    .service-name {
+        font-size: 18px;
+        font-weight: bold;
+        color: var(--plex-white);
+        display: flex;
+        align-items: center;
+        gap: 10px;
+    }
+
+    .service-status {
+        display: inline-block;
+        width: 12px;
+        height: 12px;
+        border-radius: 50%;
+        background: #4caf50;
+        box-shadow: 0 0 8px #4caf50;
+    }
+
+    .service-status.offline {
+        background: #f44336;
+        box-shadow: 0 0 8px #f44336;
+    }
+
+    .service-info {
+        font-size: 13px;
+        color: var(--plex-light);
+        margin-top: 8px;
+    }
+
+    .service-url {
+        font-size: 12px;
+        color: var(--plex-gold);
+        word-break: break-all;
+        margin-top: 4px;
+    }
+
+    .refresh-info {
+        text-align: center;
+        color: var(--plex-light);
+        font-size: 13px;
+        margin-top: 40px;
+        padding: 20px;
+        background: rgba(255, 255, 255, 0.05);
+        border-radius: 8px;
+    }
+
+    .loading-skeleton {
+        background: linear-gradient(90deg, rgba(255,255,255,0.05) 25%, rgba(255,255,255,0.1) 50%, rgba(255,255,255,0.05) 75%);
+        background-size: 200% 100%;
+        animation: shimmer 1.5s infinite;
+        border-radius: 4px;
+        height: 20px;
+    }
+
+    @keyframes shimmer {
+        0% { background-position: 200% 0; }
+        100% { background-position: -200% 0; }
+    }
+
+    @media (max-width: 768px) {
+        .dashboard-container {
+            padding: 70px 20px 20px 20px;
         }
-    </script>
-</body>
-</html>
+
+        .dashboard-title {
+            font-size: 28px;
+        }
+
+        .stats-grid {
+            grid-template-columns: 1fr;
+        }
+
+        .disk-stats {
+            flex-direction: column;
+            gap: 12px;
+        }
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="dashboard-container">
+    <div class="dashboard-header">
+        <h1 class="dashboard-title">System Dashboard</h1>
+        <p class="dashboard-subtitle">Monitor your Plex Manager system health and performance</p>
+    </div>
+
+    <!-- Transfer Stats -->
+    <div class="stats-grid">
+        <div class="stat-card">
+            <div class="stat-header">
+                <span class="stat-label">Download Speed</span>
+                <span class="stat-icon">⬇️</span>
+            </div>
+            <div class="stat-value" id="dlSpeed">
+                <div class="loading-skeleton" style="width: 120px;"></div>
+            </div>
+            <div class="stat-detail" id="dlTotal">Loading...</div>
+        </div>
+
+        <div class="stat-card">
+            <div class="stat-header">
+                <span class="stat-label">Upload Speed</span>
+                <span class="stat-icon">⬆️</span>
+            </div>
+            <div class="stat-value" id="upSpeed">
+                <div class="loading-skeleton" style="width: 120px;"></div>
+            </div>
+            <div class="stat-detail" id="upTotal">Loading...</div>
+        </div>
+
+        <div class="stat-card">
+            <div class="stat-header">
+                <span class="stat-label">Active Torrents</span>
+                <span class="stat-icon">🌊</span>
+            </div>
+            <div class="stat-value" id="activeTorrents">
+                <div class="loading-skeleton" style="width: 60px;"></div>
+            </div>
+            <div class="stat-detail" id="torrentBreakdown">Loading...</div>
+        </div>
+    </div>
+
+    <!-- Disk Usage Section -->
+    <h2 class="section-title">
+        <span>💾</span>
+        <span>Disk Usage</span>
+    </h2>
+    <div class="disk-usage-section" id="diskUsage">
+        <div class="disk-card">
+            <div class="loading-skeleton" style="height: 100px;"></div>
+        </div>
+    </div>
+
+    <!-- Service Health -->
+    <h2 class="section-title">
+        <span>🔌</span>
+        <span>Service Health</span>
+    </h2>
+    <div class="services-grid" id="servicesHealth">
+        <div class="service-card">
+            <div class="loading-skeleton" style="height: 80px;"></div>
+        </div>
+        <div class="service-card">
+            <div class="loading-skeleton" style="height: 80px;"></div>
+        </div>
+        <div class="service-card">
+            <div class="loading-skeleton" style="height: 80px;"></div>
+        </div>
+    </div>
+
+    <div class="refresh-info">
+        📡 Dashboard auto-refreshes every 10 seconds
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+    let refreshInterval;
+
+    // Load all dashboard data
+    async function loadDashboardData() {
+        await Promise.all([
+            loadTransferStats(),
+            loadDiskUsage(),
+            loadServiceHealth()
+        ]);
+    }
+
+    // Load transfer statistics
+    async function loadTransferStats() {
+        try {
+            const response = await fetch('/api/system/transfer-stats');
+            const data = await response.json();
+
+            document.getElementById('dlSpeed').textContent = `${data.dl_speed_mbps} MB/s`;
+            document.getElementById('dlTotal').textContent = `Total: ${data.dl_total_gb} GB downloaded`;
+
+            document.getElementById('upSpeed').textContent = `${data.up_speed_mbps} MB/s`;
+            document.getElementById('upTotal').textContent = `Total: ${data.up_total_gb} GB uploaded`;
+
+            const counts = data.status_counts;
+            document.getElementById('activeTorrents').textContent = counts.total;
+            document.getElementById('torrentBreakdown').textContent = 
+                `${counts.downloading} downloading • ${counts.seeding} seeding`;
+        } catch (error) {
+            console.error('Failed to load transfer stats:', error);
+            document.getElementById('dlSpeed').textContent = 'Error';
+            document.getElementById('upSpeed').textContent = 'Error';
+            document.getElementById('activeTorrents').textContent = 'Error';
+        }
+    }
+
+    // Load disk usage
+    async function loadDiskUsage() {
+        try {
+            const response = await fetch('/api/system/disk-usage');
+            const data = await response.json();
+
+            const container = document.getElementById('diskUsage');
+            container.innerHTML = '';
+
+            data.disk_usage.forEach(disk => {
+                const warningClass = disk.warning_level === 'critical' ? 'critical' : 
+                                   disk.warning_level === 'warning' ? 'warning' : '';
+                
+                const pathsText = disk.paths.map(p => p.toUpperCase()).join(', ');
+
+                const diskCard = document.createElement('div');
+                diskCard.className = `disk-card ${warningClass}`;
+                diskCard.innerHTML = `
+                    <div class="disk-header">
+                        <div>
+                            <div class="disk-partition">${disk.partition}</div>
+                            <div class="disk-paths">${pathsText}</div>
+                        </div>
+                    </div>
+                    <div class="progress-bar">
+                        <div class="progress-fill ${warningClass}" style="width: ${disk.percent_used}%"></div>
+                    </div>
+                    <div class="disk-stats">
+                        <div class="disk-stat">
+                            <div class="disk-stat-label">Total</div>
+                            <div class="disk-stat-value">${disk.total_gb} GB</div>
+                        </div>
+                        <div class="disk-stat">
+                            <div class="disk-stat-label">Used</div>
+                            <div class="disk-stat-value">${disk.used_gb} GB</div>
+                        </div>
+                        <div class="disk-stat">
+                            <div class="disk-stat-label">Free</div>
+                            <div class="disk-stat-value">${disk.free_gb} GB</div>
+                        </div>
+                        <div class="disk-stat">
+                            <div class="disk-stat-label">Usage</div>
+                            <div class="disk-stat-value">${disk.percent_used}%</div>
+                        </div>
+                    </div>
+                `;
+                container.appendChild(diskCard);
+            });
+
+            if (data.disk_usage.length === 0) {
+                container.innerHTML = '<div class="disk-card"><p>No disk information available</p></div>';
+            }
+        } catch (error) {
+            console.error('Failed to load disk usage:', error);
+            document.getElementById('diskUsage').innerHTML = 
+                '<div class="disk-card"><p>Error loading disk usage</p></div>';
+        }
+    }
+
+    // Load service health
+    async function loadServiceHealth() {
+        try {
+            const response = await fetch('/api/system/health-check');
+            const data = await response.json();
+
+            const container = document.getElementById('servicesHealth');
+            container.innerHTML = '';
+
+            const services = ['plex', 'prowlarr', 'qbittorrent'];
+            services.forEach(serviceName => {
+                const service = data.services[serviceName];
+                const statusClass = service.status === 'online' ? '' : 'offline';
+                
+                const serviceCard = document.createElement('div');
+                serviceCard.className = 'service-card';
+                serviceCard.innerHTML = `
+                    <div class="service-header">
+                        <div class="service-name">
+                            ${serviceName.charAt(0).toUpperCase() + serviceName.slice(1)}
+                            <span class="service-status ${statusClass}"></span>
+                        </div>
+                    </div>
+                    <div class="service-info">
+                        Status: ${service.status.toUpperCase()}
+                        ${service.version ? `<br>Version: ${service.version}` : ''}
+                        ${service.error ? `<br>Error: ${service.error}` : ''}
+                    </div>
+                    <div class="service-url">${service.url}</div>
+                `;
+                container.appendChild(serviceCard);
+            });
+        } catch (error) {
+            console.error('Failed to load service health:', error);
+            document.getElementById('servicesHealth').innerHTML = 
+                '<div class="service-card"><p>Error loading service health</p></div>';
+        }
+    }
+
+    // Initial load
+    loadDashboardData();
+
+    // Auto-refresh every 10 seconds
+    refreshInterval = setInterval(loadDashboardData, 10000);
+
+    // Cleanup on page unload
+    window.addEventListener('beforeunload', () => {
+        if (refreshInterval) {
+            clearInterval(refreshInterval);
+        }
+    });
+</script>
+{% endblock %}
+

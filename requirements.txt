@@ -19,6 +19,9 @@ httpx                       # Async HTTP client for testing
 sqlalchemy                  # ORM for user database
 cryptography                # Fernet encryption for Plex tokens
 
+# System Monitoring
+psutil                      # Disk usage and system information
+
 # Download Management
 apscheduler                 # Background task scheduling for download monitoring
 guessit                     # Fallback episode name parsing from filenames

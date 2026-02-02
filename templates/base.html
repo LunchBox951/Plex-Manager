@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}Plex Manager{% endblock %}</title>
+    <link rel="stylesheet" href="/static/css/sidebar.css">
+    {% block extra_css %}{% endblock %}
+</head>
+<body>
+    <!-- Hamburger Toggle Button -->
+    <button class="sidebar-toggle" id="sidebarToggle" aria-label="Toggle sidebar navigation">
+        <div class="hamburger-icon">
+            <span></span>
+            <span></span>
+            <span></span>
+        </div>
+    </button>
+
+    <!-- Sidebar Overlay (for mobile) -->
+    <div class="sidebar-overlay" id="sidebarOverlay"></div>
+
+    <!-- Sidebar Navigation -->
+    <nav class="sidebar" id="sidebar">
+        <div class="sidebar-header">
+            <div class="sidebar-logo">Plex Manager</div>
+            <div class="sidebar-subtitle">Media Hub</div>
+        </div>
+
+        <div class="sidebar-nav">
+            <!-- Main Navigation -->
+            <div class="nav-section">
+                <div class="nav-section-title">Main</div>
+                <a href="/home" class="nav-item" data-page="home">
+                    <span class="nav-item-icon">🏠</span>
+                    <span class="nav-item-text">Home</span>
+                </a>
+            </div>
+
+            <!-- System Navigation -->
+            <div class="nav-section">
+                <div class="nav-section-title">System</div>
+                <a href="/dashboard" class="nav-item" data-page="dashboard">
+                    <span class="nav-item-icon">📊</span>
+                    <span class="nav-item-text">Dashboard</span>
+                </a>
+                <a href="/downloads-view" class="nav-item" data-page="downloads">
+                    <span class="nav-item-icon">⬇️</span>
+                    <span class="nav-item-text">Active Downloads</span>
+                </a>
+            </div>
+
+            <!-- External Services -->
+            <div class="nav-section">
+                <div class="nav-section-title">External Services</div>
+                <a href="/external/plex" class="nav-item external" target="_blank">
+                    <span class="nav-item-icon">▶️</span>
+                    <span class="nav-item-text">Open Plex</span>
+                </a>
+                <a href="/external/prowlarr" class="nav-item external" target="_blank">
+                    <span class="nav-item-icon">🔍</span>
+                    <span class="nav-item-text">Open Prowlarr</span>
+                </a>
+                <a href="/external/qbittorrent" class="nav-item external" target="_blank">
+                    <span class="nav-item-icon">🌊</span>
+                    <span class="nav-item-text">Open qBittorrent</span>
+                </a>
+            </div>
+        </div>
+
+        <div class="sidebar-footer">
+            <div class="sidebar-footer-text">
+                © 2026 Plex Manager<br>
+                <span style="font-size: 10px; opacity: 0.7;">v1.0.0</span>
+            </div>
+        </div>
+    </nav>
+
+    <!-- Main Content Area -->
+    <div class="main-content" id="mainContent">
+        {% block content %}{% endblock %}
+    </div>
+
+    <!-- Sidebar JavaScript -->
+    <script>
+        // Sidebar state management
+        const sidebar = document.getElementById('sidebar');
+        const sidebarToggle = document.getElementById('sidebarToggle');
+        const sidebarOverlay = document.getElementById('sidebarOverlay');
+        const body = document.body;
+
+        // Load sidebar state from localStorage
+        const sidebarState = localStorage.getItem('sidebarOpen');
+        if (sidebarState === 'true') {
+            openSidebar();
+        }
+
+        // Toggle sidebar
+        sidebarToggle.addEventListener('click', () => {
+            if (sidebar.classList.contains('open')) {
+                closeSidebar();
+            } else {
+                openSidebar();
+            }
+        });
+
+        // Close sidebar when clicking overlay
+        sidebarOverlay.addEventListener('click', closeSidebar);
+
+        // Close sidebar on mobile when clicking a nav item
+        const navItems = document.querySelectorAll('.nav-item:not(.external)');
+        navItems.forEach(item => {
+            item.addEventListener('click', () => {
+                if (window.innerWidth < 1024) {
+                    closeSidebar();
+                }
+            });
+        });
+
+        function openSidebar() {
+            sidebar.classList.add('open');
+            sidebarToggle.classList.add('active');
+            sidebarOverlay.classList.add('active');
+            body.classList.add('sidebar-open');
+            localStorage.setItem('sidebarOpen', 'true');
+        }
+
+        function closeSidebar() {
+            sidebar.classList.remove('open');
+            sidebarToggle.classList.remove('active');
+            sidebarOverlay.classList.remove('active');
+            body.classList.remove('sidebar-open');
+            localStorage.setItem('sidebarOpen', 'false');
+        }
+
+        // Highlight active page
+        const currentPage = '{{ current_page }}';
+        if (currentPage) {
+            const activeNavItem = document.querySelector(`[data-page="${currentPage}"]`);
+            if (activeNavItem) {
+                activeNavItem.classList.add('active');
+            }
+        }
+
+        // Handle window resize
+        let resizeTimer;
+        window.addEventListener('resize', () => {
+            clearTimeout(resizeTimer);
+            resizeTimer = setTimeout(() => {
+                // Automatically close sidebar on mobile if it's open
+                if (window.innerWidth < 1024 && sidebar.classList.contains('open')) {
+                    // Don't auto-close, let user control it
+                }
+            }, 250);
+        });
+
+        // Keyboard accessibility - ESC to close sidebar
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape' && sidebar.classList.contains('open')) {
+                closeSidebar();
+            }
+        });
+    </script>
+
+    {% block extra_js %}{% endblock %}
+</body>
+</html>

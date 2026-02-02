@@ -1,0 +1,303 @@
+/* Sidebar Navigation Styles for Plex Manager */
+
+:root {
+    --sidebar-width: 260px;
+    --sidebar-collapsed-width: 0px;
+    --sidebar-transition: 0.3s ease;
+}
+
+/* Hamburger Toggle Button */
+.sidebar-toggle {
+    position: fixed;
+    top: 15px;
+    left: 15px;
+    z-index: 1001;
+    background: var(--plex-dark);
+    border: none;
+    border-radius: 8px;
+    width: 45px;
+    height: 45px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.3s ease;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+}
+
+.sidebar-toggle:hover {
+    background: var(--plex-gold);
+    transform: scale(1.05);
+}
+
+.sidebar-toggle:active {
+    transform: scale(0.95);
+}
+
+.hamburger-icon {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+}
+
+.hamburger-icon span {
+    display: block;
+    width: 24px;
+    height: 3px;
+    background: var(--plex-white);
+    border-radius: 2px;
+    transition: all 0.3s ease;
+}
+
+.sidebar-toggle.active .hamburger-icon span:nth-child(1) {
+    transform: rotate(45deg) translate(7px, 7px);
+}
+
+.sidebar-toggle.active .hamburger-icon span:nth-child(2) {
+    opacity: 0;
+}
+
+.sidebar-toggle.active .hamburger-icon span:nth-child(3) {
+    transform: rotate(-45deg) translate(7px, -7px);
+}
+
+/* Sidebar Container */
+.sidebar {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: var(--sidebar-width);
+    height: 100vh;
+    background: var(--plex-dark);
+    transform: translateX(calc(-1 * var(--sidebar-width)));
+    transition: transform var(--sidebar-transition);
+    z-index: 1000;
+    overflow-y: auto;
+    overflow-x: hidden;
+    box-shadow: 2px 0 10px rgba(0, 0, 0, 0.5);
+}
+
+.sidebar.open {
+    transform: translateX(0);
+}
+
+/* Sidebar Header */
+.sidebar-header {
+    padding: 80px 20px 20px 20px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.sidebar-logo {
+    font-size: 24px;
+    font-weight: bold;
+    color: var(--plex-gold);
+    text-align: center;
+    margin-bottom: 10px;
+}
+
+.sidebar-subtitle {
+    font-size: 12px;
+    color: var(--plex-light);
+    text-align: center;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+}
+
+/* Navigation Menu */
+.sidebar-nav {
+    padding: 20px 0;
+}
+
+.nav-section {
+    margin-bottom: 30px;
+}
+
+.nav-section-title {
+    padding: 10px 20px;
+    font-size: 11px;
+    color: var(--plex-light);
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    font-weight: 600;
+}
+
+.nav-item {
+    display: flex;
+    align-items: center;
+    padding: 12px 20px;
+    color: var(--plex-white);
+    text-decoration: none;
+    transition: all 0.2s ease;
+    position: relative;
+    cursor: pointer;
+}
+
+.nav-item:hover {
+    background: rgba(229, 160, 13, 0.1);
+    padding-left: 25px;
+}
+
+.nav-item.active {
+    background: rgba(229, 160, 13, 0.2);
+    border-left: 3px solid var(--plex-gold);
+    color: var(--plex-gold);
+}
+
+.nav-item-icon {
+    font-size: 18px;
+    margin-right: 12px;
+    width: 24px;
+    text-align: center;
+}
+
+.nav-item-text {
+    font-size: 14px;
+    font-weight: 500;
+}
+
+.nav-item-badge {
+    margin-left: auto;
+    background: var(--plex-gold);
+    color: var(--plex-darker);
+    font-size: 11px;
+    font-weight: bold;
+    padding: 2px 8px;
+    border-radius: 10px;
+}
+
+/* External Link Icon */
+.nav-item.external .nav-item-icon::after {
+    content: '↗';
+    font-size: 10px;
+    position: absolute;
+    margin-left: -8px;
+    margin-top: -6px;
+}
+
+/* Sidebar Footer */
+.sidebar-footer {
+    position: absolute;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    padding: 20px;
+    border-top: 1px solid rgba(255, 255, 255, 0.1);
+    background: var(--plex-darker);
+}
+
+.sidebar-footer-text {
+    font-size: 11px;
+    color: var(--plex-light);
+    text-align: center;
+}
+
+/* Overlay for mobile */
+.sidebar-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100vw;
+    height: 100vh;
+    background: rgba(0, 0, 0, 0.7);
+    opacity: 0;
+    visibility: hidden;
+    transition: opacity var(--sidebar-transition), visibility var(--sidebar-transition);
+    z-index: 999;
+}
+
+.sidebar-overlay.active {
+    opacity: 1;
+    visibility: visible;
+}
+
+/* Main Content Adjustment */
+.main-content {
+    transition: margin-left var(--sidebar-transition);
+    min-height: 100vh;
+}
+
+/* Desktop: Push content when sidebar is open */
+@media (min-width: 1024px) {
+    body.sidebar-open .main-content {
+        margin-left: var(--sidebar-width);
+    }
+    
+    body.sidebar-open .sidebar-overlay {
+        display: none;
+    }
+}
+
+/* Tablet and Mobile: Overlay sidebar */
+@media (max-width: 1023px) {
+    .sidebar {
+        box-shadow: 4px 0 20px rgba(0, 0, 0, 0.7);
+    }
+}
+
+/* Mobile Adjustments */
+@media (max-width: 768px) {
+    :root {
+        --sidebar-width: 280px;
+    }
+    
+    .sidebar-toggle {
+        top: 10px;
+        left: 10px;
+        width: 40px;
+        height: 40px;
+    }
+    
+    .sidebar-header {
+        padding-top: 70px;
+    }
+    
+    .nav-item {
+        padding: 14px 20px;
+    }
+    
+    .nav-item-text {
+        font-size: 15px;
+    }
+}
+
+/* Scrollbar Styling for Sidebar */
+.sidebar::-webkit-scrollbar {
+    width: 6px;
+}
+
+.sidebar::-webkit-scrollbar-track {
+    background: var(--plex-darker);
+}
+
+.sidebar::-webkit-scrollbar-thumb {
+    background: var(--plex-gold);
+    border-radius: 3px;
+}
+
+.sidebar::-webkit-scrollbar-thumb:hover {
+    background: #f0b020;
+}
+
+/* Animation for nav items */
+@keyframes slideInLeft {
+    from {
+        opacity: 0;
+        transform: translateX(-20px);
+    }
+    to {
+        opacity: 1;
+        transform: translateX(0);
+    }
+}
+
+.sidebar.open .nav-item {
+    animation: slideInLeft 0.3s ease forwards;
+}
+
+.sidebar.open .nav-item:nth-child(1) { animation-delay: 0.05s; }
+.sidebar.open .nav-item:nth-child(2) { animation-delay: 0.1s; }
+.sidebar.open .nav-item:nth-child(3) { animation-delay: 0.15s; }
+.sidebar.open .nav-item:nth-child(4) { animation-delay: 0.2s; }
+.sidebar.open .nav-item:nth-child(5) { animation-delay: 0.25s; }
+.sidebar.open .nav-item:nth-child(6) { animation-delay: 0.3s; }
+.sidebar.open .nav-item:nth-child(7) { animation-delay: 0.35s; }

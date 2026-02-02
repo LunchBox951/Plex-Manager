@@ -1,15 +1,15 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Home - Plex Manager</title>
-    <link rel="stylesheet" href="/static/css/homepage.css">
-    <!-- Swiper.js CSS -->
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/swiper@11/swiper-bundle.min.css" />
-</head>
-<body>
-    <div class="homepage">
+{% extends "base.html" %}
+
+{% block title %}Home - Plex Manager{% endblock %}
+
+{% block extra_css %}
+<link rel="stylesheet" href="/static/css/homepage.css">
+<!-- Swiper.js CSS -->
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/swiper@11/swiper-bundle.min.css" />
+{% endblock %}
+
+{% block content %}
+<div class="homepage">
         <!-- Header -->
         <header class="homepage-header">
             <div class="header-content">
@@ -1199,5 +1199,5 @@
     
     <!-- Swiper.js JS -->
     <script src="https://cdn.jsdelivr.net/npm/swiper@11/swiper-bundle.min.js"></script>
-</body>
-</html>
+</div>
+{% endblock %}

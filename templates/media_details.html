@@ -1,14 +1,14 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{{ media.title or media.name }} - Plex Manager</title>
-    <link rel="stylesheet" href="/static/css/homepage.css">
-    <link rel="stylesheet" href="/static/css/media_details.css">
-</head>
-<body>
-    <div class="media-details-page">
+{% extends "base.html" %}
+
+{% block title %}{{ media.title or media.name }} - Plex Manager{% endblock %}
+
+{% block extra_css %}
+<link rel="stylesheet" href="/static/css/homepage.css">
+<link rel="stylesheet" href="/static/css/media_details.css">
+{% endblock %}
+
+{% block content %}
+<div class="media-details-page">
         <!-- Header -->
         <header class="details-header">
             <div class="header-content">
@@ -800,5 +800,5 @@
         // Check for existing requests when page loads
         window.addEventListener('DOMContentLoaded', checkExistingRequest);
     </script>
-</body>
-</html>
+</div>
+{% endblock %}

@@ -241,6 +241,156 @@ async def list_downloads(
     return [DownloadResponse(**d.to_dict()) for d in downloads]
 
 
+# Test endpoint to verify authentication works
+@router.get("/downloads/test")
+async def test_downloads_endpoint(
+    test_param: str = "default",
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    return {
+        "status": "ok",
+        "test_param": test_param,
+        "user": current_user.username
+    }
+
+
+@router.get("/downloads/active")
+async def get_active_downloads(
+    status: str = "all",
+    sort_by: str = "date",
+    search: str = "",
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Get all active downloads from qBittorrent with filtering and sorting.
+    
+    Args:
+        status: Filter by status (downloading, seeding, paused, completed, all)
+        sort_by: Sort field (name, progress, speed, date, size)
+        search: Search by torrent name
+    """
+    try:
+        import requests
+        import os
+        
+        qbit_url = os.getenv('QBITTORRENT_URL')
+        username = os.getenv('QBITTORRENT_USERNAME')
+        password = os.getenv('QBITTORRENT_PASSWORD')
+        
+        if not qbit_url or not username or not password:
+            raise HTTPException(status_code=500, detail="qBittorrent configuration missing")
+        
+        # Login to qBittorrent
+        session = requests.Session()
+        login_resp = session.post(f"{qbit_url}/api/v2/auth/login", data={
+            'username': username,
+            'password': password
+        }, timeout=5)
+        
+        if login_resp.text != 'Ok.':
+            raise HTTPException(status_code=500, detail="qBittorrent authentication failed")
+        
+        # Get all torrents
+        params = {}
+        if status and status != 'all':
+            params['filter'] = status
+        
+        response = session.get(f"{qbit_url}/api/v2/torrents/info", params=params, timeout=5)
+        response.raise_for_status()
+        torrents = response.json()
+        
+        # Apply search filter
+        if search and search.strip():
+            search_lower = search.lower()
+            torrents = [t for t in torrents if search_lower in t.get('name', '').lower()]
+        
+        # Get request counts
+        request_counts = {
+            'pending': db.query(MediaRequest).filter(MediaRequest.status == 'pending').count(),
+            'downloading': db.query(MediaRequest).filter(MediaRequest.status == 'downloading').count(),
+            'processing': db.query(MediaRequest).filter(MediaRequest.status == 'processing').count(),
+            'total': db.query(MediaRequest).count()
+        }
+        
+        # Format torrent data
+        formatted_torrents = []
+        for torrent in torrents:
+            formatted_torrents.append({
+                'hash': torrent.get('hash'),
+                'name': torrent.get('name'),
+                'state': torrent.get('state'),
+                'progress': round(torrent.get('progress', 0) * 100, 2),
+                'size': torrent.get('size', 0),
+                'size_gb': round(torrent.get('size', 0) / (1024**3), 2),
+                'downloaded': torrent.get('downloaded', 0),
+                'downloaded_gb': round(torrent.get('downloaded', 0) / (1024**3), 2),
+                'dl_speed': torrent.get('dlspeed', 0),
+                'dl_speed_mbps': round(torrent.get('dlspeed', 0) / (1024**2), 2),
+                'up_speed': torrent.get('upspeed', 0),
+                'up_speed_mbps': round(torrent.get('upspeed', 0) / (1024**2), 2),
+                'eta': torrent.get('eta', 0),
+                'eta_formatted': format_eta(torrent.get('eta', 0)),
+                'ratio': round(torrent.get('ratio', 0), 2),
+                'num_seeds': torrent.get('num_seeds', 0),
+                'num_leechs': torrent.get('num_leechs', 0),
+                'added_on': torrent.get('added_on', 0),
+                'completion_on': torrent.get('completion_on', 0),
+                'category': torrent.get('category', ''),
+                'save_path': torrent.get('save_path', '')
+            })
+        
+        # Sort torrents
+        if sort_by == 'name':
+            formatted_torrents.sort(key=lambda x: x['name'].lower())
+        elif sort_by == 'progress':
+            formatted_torrents.sort(key=lambda x: x['progress'], reverse=True)
+        elif sort_by == 'speed':
+            formatted_torrents.sort(key=lambda x: x['dl_speed'], reverse=True)
+        elif sort_by == 'size':
+            formatted_torrents.sort(key=lambda x: x['size'], reverse=True)
+        elif sort_by == 'date':
+            formatted_torrents.sort(key=lambda x: x['added_on'], reverse=True)
+        
+        return {
+            "torrents": formatted_torrents,
+            "request_counts": request_counts,
+            "total_count": len(formatted_torrents),
+            "filters": {
+                "status": status or "all",
+                "sort_by": sort_by,
+                "search": search or ""
+            },
+            "timestamp": datetime.now().isoformat()
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to get active downloads: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+def format_eta(seconds):
+    """Format ETA seconds into human-readable string."""
+    if seconds < 0 or seconds == 8640000:  # qBittorrent uses 8640000 for infinite
+        return "∞"
+    
+    hours = seconds // 3600
+    minutes = (seconds % 3600) // 60
+    
+    if hours > 24:
+        days = hours // 24
+        return f"{days}d {hours % 24}h"
+    elif hours > 0:
+        return f"{hours}h {minutes}m"
+    else:
+        return f"{minutes}m"
+
+
 @router.get("/downloads/{download_id}", response_model=DownloadResponse)
 async def get_download(
     download_id: int,

@@ -1,0 +1,607 @@
+{% extends "base.html" %}
+
+{% block title %}Active Downloads - Plex Manager{% endblock %}
+
+{% block extra_css %}
+<style>
+    :root {
+        --plex-gold: #E5A00D;
+        --plex-dark: #282A2D;
+        --plex-darker: #1A1B1D;
+        --plex-light: #CCCCCC;
+        --plex-white: #FFFFFF;
+    }
+
+    body {
+        margin: 0;
+        padding: 0;
+        background: var(--plex-darker);
+        color: var(--plex-white);
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+    }
+
+    .downloads-container {
+        padding: 80px 40px 40px 40px;
+        max-width: 1600px;
+        margin: 0 auto;
+    }
+
+    .downloads-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: flex-start;
+        margin-bottom: 30px;
+        flex-wrap: wrap;
+        gap: 20px;
+    }
+
+    .header-left h1 {
+        font-size: 36px;
+        font-weight: bold;
+        color: var(--plex-gold);
+        margin: 0 0 10px 0;
+    }
+
+    .header-left p {
+        font-size: 16px;
+        color: var(--plex-light);
+        margin: 0;
+    }
+
+    .header-right {
+        display: flex;
+        gap: 12px;
+        align-items: center;
+    }
+
+    .qbittorrent-link {
+        background: var(--plex-gold);
+        color: var(--plex-darker);
+        padding: 12px 24px;
+        border-radius: 8px;
+        text-decoration: none;
+        font-weight: bold;
+        font-size: 14px;
+        transition: all 0.2s ease;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+    }
+
+    .qbittorrent-link:hover {
+        background: #f0b020;
+        transform: translateY(-2px);
+        box-shadow: 0 4px 12px rgba(229, 160, 13, 0.3);
+    }
+
+    .request-stats {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+        gap: 15px;
+        margin-bottom: 30px;
+    }
+
+    .request-stat {
+        background: var(--plex-dark);
+        padding: 16px 20px;
+        border-radius: 8px;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+    }
+
+    .request-stat-label {
+        font-size: 13px;
+        color: var(--plex-light);
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+    }
+
+    .request-stat-value {
+        font-size: 24px;
+        font-weight: bold;
+        color: var(--plex-gold);
+    }
+
+    .controls-bar {
+        background: var(--plex-dark);
+        padding: 20px;
+        border-radius: 12px;
+        margin-bottom: 30px;
+        display: flex;
+        gap: 15px;
+        flex-wrap: wrap;
+        align-items: center;
+    }
+
+    .control-group {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+    }
+
+    .control-label {
+        font-size: 13px;
+        color: var(--plex-light);
+        font-weight: 500;
+    }
+
+    .control-select, .control-input {
+        background: var(--plex-darker);
+        color: var(--plex-white);
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        padding: 8px 12px;
+        border-radius: 6px;
+        font-size: 14px;
+        min-width: 150px;
+    }
+
+    .control-input {
+        min-width: 250px;
+    }
+
+    .control-select:focus, .control-input:focus {
+        outline: none;
+        border-color: var(--plex-gold);
+    }
+
+    .refresh-btn {
+        background: rgba(229, 160, 13, 0.2);
+        color: var(--plex-gold);
+        border: 1px solid var(--plex-gold);
+        padding: 8px 16px;
+        border-radius: 6px;
+        font-size: 14px;
+        font-weight: 500;
+        cursor: pointer;
+        transition: all 0.2s ease;
+        margin-left: auto;
+    }
+
+    .refresh-btn:hover {
+        background: var(--plex-gold);
+        color: var(--plex-darker);
+    }
+
+    .torrents-list {
+        display: flex;
+        flex-direction: column;
+        gap: 15px;
+    }
+
+    .torrent-card {
+        background: var(--plex-dark);
+        border-radius: 12px;
+        padding: 20px;
+        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+        transition: all 0.2s ease;
+    }
+
+    .torrent-card:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 6px 16px rgba(0, 0, 0, 0.4);
+    }
+
+    .torrent-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: flex-start;
+        margin-bottom: 16px;
+        gap: 15px;
+    }
+
+    .torrent-name {
+        font-size: 16px;
+        font-weight: 600;
+        color: var(--plex-white);
+        flex: 1;
+        word-break: break-word;
+    }
+
+    .torrent-state {
+        padding: 4px 12px;
+        border-radius: 12px;
+        font-size: 11px;
+        font-weight: bold;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+        white-space: nowrap;
+    }
+
+    .state-downloading {
+        background: rgba(76, 175, 80, 0.2);
+        color: #4caf50;
+        border: 1px solid #4caf50;
+    }
+
+    .state-seeding {
+        background: rgba(33, 150, 243, 0.2);
+        color: #2196f3;
+        border: 1px solid #2196f3;
+    }
+
+    .state-paused {
+        background: rgba(255, 152, 0, 0.2);
+        color: #ff9800;
+        border: 1px solid #ff9800;
+    }
+
+    .state-error {
+        background: rgba(244, 67, 54, 0.2);
+        color: #f44336;
+        border: 1px solid #f44336;
+    }
+
+    .torrent-progress {
+        margin-bottom: 16px;
+    }
+
+    .progress-header {
+        display: flex;
+        justify-content: space-between;
+        margin-bottom: 8px;
+        font-size: 13px;
+        color: var(--plex-light);
+    }
+
+    .progress-bar {
+        width: 100%;
+        height: 8px;
+        background: rgba(255, 255, 255, 0.1);
+        border-radius: 4px;
+        overflow: hidden;
+    }
+
+    .progress-fill {
+        height: 100%;
+        background: linear-gradient(90deg, var(--plex-gold), #f0b020);
+        border-radius: 4px;
+        transition: width 0.3s ease;
+    }
+
+    .torrent-stats {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+        gap: 16px;
+        margin-bottom: 16px;
+    }
+
+    .torrent-stat {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+    }
+
+    .torrent-stat-label {
+        font-size: 11px;
+        color: var(--plex-light);
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+    }
+
+    .torrent-stat-value {
+        font-size: 15px;
+        font-weight: 600;
+        color: var(--plex-white);
+    }
+
+    .speed-down {
+        color: #4caf50;
+    }
+
+    .speed-up {
+        color: #2196f3;
+    }
+
+    .empty-state {
+        text-align: center;
+        padding: 60px 20px;
+        background: var(--plex-dark);
+        border-radius: 12px;
+    }
+
+    .empty-state-icon {
+        font-size: 64px;
+        margin-bottom: 20px;
+    }
+
+    .empty-state-text {
+        font-size: 18px;
+        color: var(--plex-light);
+    }
+
+    .loading-skeleton {
+        background: linear-gradient(90deg, rgba(255,255,255,0.05) 25%, rgba(255,255,255,0.1) 50%, rgba(255,255,255,0.05) 75%);
+        background-size: 200% 100%;
+        animation: shimmer 1.5s infinite;
+        border-radius: 4px;
+        height: 150px;
+    }
+
+    @keyframes shimmer {
+        0% { background-position: 200% 0; }
+        100% { background-position: -200% 0; }
+    }
+
+    .refresh-indicator {
+        text-align: center;
+        color: var(--plex-light);
+        font-size: 13px;
+        margin-top: 30px;
+        padding: 15px;
+        background: rgba(255, 255, 255, 0.05);
+        border-radius: 8px;
+    }
+
+    @media (max-width: 768px) {
+        .downloads-container {
+            padding: 70px 20px 20px 20px;
+        }
+
+        .downloads-header {
+            flex-direction: column;
+        }
+
+        .header-left h1 {
+            font-size: 28px;
+        }
+
+        .control-input {
+            min-width: 100%;
+        }
+
+        .controls-bar {
+            flex-direction: column;
+            align-items: stretch;
+        }
+
+        .control-group {
+            flex-direction: column;
+            align-items: stretch;
+        }
+
+        .control-select {
+            min-width: 100%;
+        }
+
+        .refresh-btn {
+            margin-left: 0;
+        }
+
+        .torrent-stats {
+            grid-template-columns: repeat(2, 1fr);
+        }
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="downloads-container">
+    <div class="downloads-header">
+        <div class="header-left">
+            <h1>Active Downloads</h1>
+            <p>Monitor and manage all active torrents</p>
+        </div>
+        <div class="header-right">
+            <a href="/external/qbittorrent" target="_blank" class="qbittorrent-link">
+                <span>🌊</span>
+                <span>Open qBittorrent</span>
+            </a>
+        </div>
+    </div>
+
+    <!-- Request Stats -->
+    <div class="request-stats">
+        <div class="request-stat">
+            <span class="request-stat-label">Pending Requests</span>
+            <span class="request-stat-value" id="pendingCount">-</span>
+        </div>
+        <div class="request-stat">
+            <span class="request-stat-label">Downloading</span>
+            <span class="request-stat-value" id="downloadingCount">-</span>
+        </div>
+        <div class="request-stat">
+            <span class="request-stat-label">Processing</span>
+            <span class="request-stat-value" id="processingCount">-</span>
+        </div>
+        <div class="request-stat">
+            <span class="request-stat-label">Total Requests</span>
+            <span class="request-stat-value" id="totalCount">-</span>
+        </div>
+    </div>
+
+    <!-- Controls -->
+    <div class="controls-bar">
+        <div class="control-group">
+            <label class="control-label">Status:</label>
+            <select id="statusFilter" class="control-select">
+                <option value="all">All</option>
+                <option value="downloading">Downloading</option>
+                <option value="seeding">Seeding</option>
+                <option value="paused">Paused</option>
+                <option value="completed">Completed</option>
+            </select>
+        </div>
+        <div class="control-group">
+            <label class="control-label">Sort by:</label>
+            <select id="sortBy" class="control-select">
+                <option value="date">Date Added</option>
+                <option value="name">Name</option>
+                <option value="progress">Progress</option>
+                <option value="speed">Download Speed</option>
+                <option value="size">Size</option>
+            </select>
+        </div>
+        <div class="control-group">
+            <input type="text" id="searchInput" class="control-input" placeholder="Search torrents...">
+        </div>
+        <button class="refresh-btn" onclick="loadTorrents()">🔄 Refresh</button>
+    </div>
+
+    <!-- Torrents List -->
+    <div class="torrents-list" id="torrentsList">
+        <div class="torrent-card">
+            <div class="loading-skeleton"></div>
+        </div>
+    </div>
+
+    <div class="refresh-indicator">
+        📡 Auto-refreshes every 5 seconds
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+    let refreshInterval;
+    let currentFilters = {
+        status: 'all',
+        sortBy: 'date',
+        search: ''
+    };
+
+    // Load torrents with current filters
+    async function loadTorrents() {
+        try {
+            const params = new URLSearchParams({
+                status: currentFilters.status,
+                sort_by: currentFilters.sortBy,
+                search: currentFilters.search
+            });
+
+            const response = await fetch(`/api/downloads/active?${params}`);
+            const data = await response.json();
+
+            // Update request counts
+            document.getElementById('pendingCount').textContent = data.request_counts.pending;
+            document.getElementById('downloadingCount').textContent = data.request_counts.downloading;
+            document.getElementById('processingCount').textContent = data.request_counts.processing;
+            document.getElementById('totalCount').textContent = data.request_counts.total;
+
+            // Render torrents
+            renderTorrents(data.torrents);
+        } catch (error) {
+            console.error('Failed to load torrents:', error);
+            document.getElementById('torrentsList').innerHTML = `
+                <div class="empty-state">
+                    <div class="empty-state-icon">❌</div>
+                    <div class="empty-state-text">Failed to load torrents</div>
+                </div>
+            `;
+        }
+    }
+
+    function renderTorrents(torrents) {
+        const container = document.getElementById('torrentsList');
+
+        if (torrents.length === 0) {
+            container.innerHTML = `
+                <div class="empty-state">
+                    <div class="empty-state-icon">📭</div>
+                    <div class="empty-state-text">No torrents found</div>
+                </div>
+            `;
+            return;
+        }
+
+        container.innerHTML = torrents.map(torrent => `
+            <div class="torrent-card">
+                <div class="torrent-header">
+                    <div class="torrent-name">${escapeHtml(torrent.name)}</div>
+                    <span class="torrent-state ${getStateClass(torrent.state)}">${torrent.state}</span>
+                </div>
+
+                <div class="torrent-progress">
+                    <div class="progress-header">
+                        <span>${torrent.progress}%</span>
+                        <span>${torrent.downloaded_gb} GB / ${torrent.size_gb} GB</span>
+                    </div>
+                    <div class="progress-bar">
+                        <div class="progress-fill" style="width: ${torrent.progress}%"></div>
+                    </div>
+                </div>
+
+                <div class="torrent-stats">
+                    <div class="torrent-stat">
+                        <span class="torrent-stat-label">⬇️ Download</span>
+                        <span class="torrent-stat-value speed-down">${torrent.dl_speed_mbps} MB/s</span>
+                    </div>
+                    <div class="torrent-stat">
+                        <span class="torrent-stat-label">⬆️ Upload</span>
+                        <span class="torrent-stat-value speed-up">${torrent.up_speed_mbps} MB/s</span>
+                    </div>
+                    <div class="torrent-stat">
+                        <span class="torrent-stat-label">⏱️ ETA</span>
+                        <span class="torrent-stat-value">${torrent.eta_formatted}</span>
+                    </div>
+                    <div class="torrent-stat">
+                        <span class="torrent-stat-label">📊 Ratio</span>
+                        <span class="torrent-stat-value">${torrent.ratio}</span>
+                    </div>
+                    <div class="torrent-stat">
+                        <span class="torrent-stat-label">🌱 Seeds</span>
+                        <span class="torrent-stat-value">${torrent.num_seeds}</span>
+                    </div>
+                    <div class="torrent-stat">
+                        <span class="torrent-stat-label">👥 Peers</span>
+                        <span class="torrent-stat-value">${torrent.num_leechs}</span>
+                    </div>
+                </div>
+            </div>
+        `).join('');
+    }
+
+    function getStateClass(state) {
+        state = state.toLowerCase();
+        if (state.includes('downloading') || state.includes('downloading')) {
+            return 'state-downloading';
+        } else if (state.includes('seeding') || state.includes('uploading')) {
+            return 'state-seeding';
+        } else if (state.includes('paused')) {
+            return 'state-paused';
+        } else if (state.includes('error') || state.includes('missing')) {
+            return 'state-error';
+        }
+        return 'state-downloading';
+    }
+
+    function escapeHtml(text) {
+        const div = document.createElement('div');
+        div.textContent = text;
+        return div.innerHTML;
+    }
+
+    // Event listeners for filters
+    document.getElementById('statusFilter').addEventListener('change', (e) => {
+        currentFilters.status = e.target.value;
+        loadTorrents();
+    });
+
+    document.getElementById('sortBy').addEventListener('change', (e) => {
+        currentFilters.sortBy = e.target.value;
+        loadTorrents();
+    });
+
+    let searchTimeout;
+    document.getElementById('searchInput').addEventListener('input', (e) => {
+        clearTimeout(searchTimeout);
+        searchTimeout = setTimeout(() => {
+            currentFilters.search = e.target.value;
+            loadTorrents();
+        }, 500);
+    });
+
+    // Initial load
+    loadTorrents();
+
+    // Auto-refresh every 5 seconds
+    refreshInterval = setInterval(loadTorrents, 5000);
+
+    // Cleanup on page unload
+    window.addEventListener('beforeunload', () => {
+        if (refreshInterval) {
+            clearInterval(refreshInterval);
+        }
+    });
+</script>
+{% endblock %}

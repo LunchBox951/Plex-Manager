@@ -16,11 +16,10 @@ logger = logging.getLogger(__name__)
 
 # Resolution multipliers for scoring
 RESOLUTION_MULTIPLIERS = {
-    '2160p': 2.0,  # 4K
-    '1080p': 1.5,
+    '2160p': 4.0,  # 4K
+    '1080p': 2,
     '720p': 1.0,
     '480p': 0.5,
-    '360p': 0.3,
 }
 
 # Patterns to detect and reject
