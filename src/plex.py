@@ -1,11 +1,10 @@
 from plexapi.server import PlexServer
+from plexapi.video import Movie, Show
 import os
 import sys
 import time
 import re
 import logging
-
-from media import Movie, TVShow
 
 logger = logging.getLogger(__name__)
 
@@ -70,7 +69,7 @@ def get_plex_libraries():
     """Returns a list of Plex libraries."""
     return safe_api_call(lambda: plex.library.sections())
 
-def get_media_in_libraries(libraries) -> tuple[list[Movie], list[TVShow]]:
+def get_media_in_libraries(libraries) -> tuple[list[Movie], list[Show]]:
     """Returns all media items in the specified library."""
     movies = []
     tv_shows = []
@@ -82,7 +81,7 @@ def get_media_in_libraries(libraries) -> tuple[list[Movie], list[TVShow]]:
             if library.type == 'movie':
                 movies.append(Movie(item))
             elif library.type == 'show':
-                tv_shows.append(TVShow(item))
+                tv_shows.append(Show(item))
 
     return movies, tv_shows
 
@@ -174,7 +173,7 @@ def check_media_exists(
                 
                 # Check year match (±1 year tolerance)
                 item_year = getattr(item, 'year', None)
-                if item_year and abs(item_year - year) > 1:
+                if item_year and year and abs(item_year - year) > 1:
                     continue
                 
                 # Match found!

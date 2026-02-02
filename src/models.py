@@ -113,12 +113,12 @@ class Download(Base):
         }
 
 
-class TMDBCache(Base):
+class TMDBSeasonCache(Base):
     """
     Cache for TMDB season episode counts.
     Reduces API calls and provides episode count for season pack scoring.
     """
-    __tablename__ = "tmdb_cache"
+    __tablename__ = "tmdb_season_cache"
     
     id = Column(Integer, primary_key=True, index=True)
     tmdb_id = Column(Integer, nullable=False, index=True)
@@ -283,5 +283,58 @@ class Settings(Base):
             "value": self.value,
             "description": self.description,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None
+        }
+
+
+class TMDBCache(Base):
+    """
+    TMDB API response cache to minimize API calls.
+    Stores search results, trending data, and media details with TTL-based expiration.
+    """
+    __tablename__ = "tmdb_cache"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    cache_key = Column(String, unique=True, nullable=False, index=True)  # Hash of query params
+    cache_type = Column(String, nullable=False, index=True)  # 'search', 'trending', 'details'
+    data_json = Column(Text, nullable=False)  # Serialized JSON response
+    expires_at = Column(DateTime, nullable=False, index=True)  # TTL expiration
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    
+    def is_expired(self) -> bool:
+        """Check if cache entry has expired."""
+        return datetime.utcnow() > self.expires_at
+    
+    def to_dict(self):
+        """Convert cache entry to dictionary."""
+        return {
+            "id": self.id,
+            "cache_key": self.cache_key,
+            "cache_type": self.cache_type,
+            "expires_at": self.expires_at.isoformat() if self.expires_at else None,
+            "created_at": self.created_at.isoformat() if self.created_at else None
+        }
+
+
+class SearchCache(Base):
+    """
+    Per-user search history cache for TMDB searches.
+    Links to User for tracking individual search patterns.
+    """
+    __tablename__ = "search_cache"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey('users.id'), nullable=False, index=True)
+    query = Column(String, nullable=False, index=True)  # Normalized search query
+    cache_key = Column(String, nullable=False, index=True)  # Reference to TMDBCache
+    searched_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    
+    def to_dict(self):
+        """Convert search cache entry to dictionary."""
+        return {
+            "id": self.id,
+            "user_id": self.user_id,
+            "query": self.query,
+            "cache_key": self.cache_key,
+            "searched_at": self.searched_at.isoformat() if self.searched_at else None
         }
 

@@ -677,6 +677,76 @@ def check_scheduled_deletions():
         db.close()
 
 
+async def refresh_trending_cache():
+    """Refresh trending cache data daily."""
+    from src.TMDB import get_or_fetch_trending
+    import logging
+    
+    logger = logging.getLogger(__name__)
+    logger.info("Starting scheduled trending cache refresh")
+    
+    try:
+        # Refresh trending movies
+        await get_or_fetch_trending(media_type="movie", time_window="week", force_refresh=True)
+        logger.info("Refreshed trending movies cache")
+        
+        # Refresh trending TV shows
+        await get_or_fetch_trending(media_type="tv", time_window="week", force_refresh=True)
+        logger.info("Refreshed trending TV cache")
+        
+    except Exception as e:
+        logger.error(f"Error refreshing trending cache: {e}")
+
+
+async def cleanup_expired_cache():
+    """Remove expired images from cache."""
+    import os
+    import json
+    from datetime import datetime, timezone
+    import logging
+    
+    logger = logging.getLogger(__name__)
+    logger.info("Starting scheduled cache cleanup")
+    
+    cache_dir = "cache/images/w500"
+    metadata_file = "cache/image_metadata.json"
+    
+    if not os.path.exists(metadata_file):
+        logger.warning("No image metadata file found")
+        return
+    
+    try:
+        with open(metadata_file, 'r') as f:
+            metadata = json.load(f)
+        
+        deleted_count = 0
+        current_time = datetime.now(timezone.utc)
+        
+        for filename, file_info in list(metadata.items()):
+            expires_at = datetime.fromisoformat(file_info['expires_at'])
+            
+            if current_time > expires_at:
+                image_path = os.path.join(cache_dir, filename)
+                if os.path.exists(image_path):
+                    os.remove(image_path)
+                    deleted_count += 1
+                    logger.debug(f"Deleted expired image: {filename}")
+                
+                # Remove from metadata
+                del metadata[filename]
+        
+        # Save updated metadata
+        if deleted_count > 0:
+            with open(metadata_file, 'w') as f:
+                json.dump(metadata, f, indent=2)
+            logger.info(f"Cleaned up {deleted_count} expired images")
+        else:
+            logger.info("No expired images to clean up")
+            
+    except Exception as e:
+        logger.error(f"Error cleaning up cache: {e}")
+
+
 def start_monitor():
     """Start the download monitoring scheduler."""
     scheduler = get_scheduler()
@@ -707,6 +777,26 @@ def start_monitor():
         hour=4,
         minute=0,
         id='retention_deletions',
+        replace_existing=True
+    )
+    
+    # Refresh trending cache daily at 4 AM
+    scheduler.add_job(
+        refresh_trending_cache,
+        'cron',
+        hour=4,
+        minute=0,
+        id='refresh_trending',
+        replace_existing=True
+    )
+    
+    # Cleanup expired cache daily at 5 AM
+    scheduler.add_job(
+        cleanup_expired_cache,
+        'cron',
+        hour=5,
+        minute=0,
+        id='cleanup_cache',
         replace_existing=True
     )
     

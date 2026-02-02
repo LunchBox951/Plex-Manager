@@ -1,0 +1,656 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Home - Plex Manager</title>
+    <link rel="stylesheet" href="/static/css/homepage.css">
+</head>
+<body>
+    <div class="homepage">
+        <!-- Header -->
+        <header class="homepage-header">
+            <div class="header-content">
+                <div class="header-logo">
+                    <h1>Plex Manager</h1>
+                </div>
+                
+                <div class="search-container">
+                    <input 
+                        type="text" 
+                        class="search-bar" 
+                        id="searchInput" 
+                        placeholder="Search movies and TV shows..."
+                        autocomplete="off"
+                    >
+                    <button class="search-icon" id="searchButton" aria-label="Search">
+                        🔍
+                    </button>
+                </div>
+                
+                <div class="user-info">
+                    <img src="{{ user.avatar_url or '/static/img/default-avatar.png' }}" alt="Avatar" class="user-avatar">
+                    <span class="username">{{ user.username }}</span>
+                    {% if user.is_admin %}
+                    <span class="admin-badge">Admin</span>
+                    {% endif %}
+                    <button onclick="logout()" class="logout-btn">Logout</button>
+                </div>
+            </div>
+        </header>
+
+        <!-- Main Content -->
+        <main class="homepage-main">
+            <!-- Search Results Section -->
+            <section class="search-results" id="searchResults">
+                <div class="search-results-header">
+                    <h2 id="searchResultsTitle">Search Results</h2>
+                    <button class="clear-search" onclick="clearSearch()">Clear</button>
+                </div>
+                
+                <div class="search-tabs">
+                    <button class="search-tab active" data-tab="movies" onclick="switchSearchTab('movies')">
+                        Movies <span id="moviesCount"></span>
+                    </button>
+                    <button class="search-tab" data-tab="tv" onclick="switchSearchTab('tv')">
+                        TV Shows <span id="tvCount"></span>
+                    </button>
+                </div>
+                
+                <div class="search-tab-content active" id="moviesTab">
+                    <div class="media-row" id="moviesResults"></div>
+                    <div class="loading-spinner" id="moviesLoading" style="display: none;">
+                        <div class="spinner"></div>
+                    </div>
+                    <div class="no-results" id="moviesNoResults" style="display: none;">
+                        <h3>No movies found</h3>
+                        <p>Try different keywords</p>
+                    </div>
+                    <div class="end-message" id="moviesEndMessage" style="display: none;">
+                        No more results
+                    </div>
+                </div>
+                
+                <div class="search-tab-content" id="tvTab">
+                    <div class="media-row" id="tvResults"></div>
+                    <div class="loading-spinner" id="tvLoading" style="display: none;">
+                        <div class="spinner"></div>
+                    </div>
+                    <div class="no-results" id="tvNoResults" style="display: none;">
+                        <h3>No TV shows found</h3>
+                        <p>Try different keywords</p>
+                    </div>
+                    <div class="end-message" id="tvEndMessage" style="display: none;">
+                        No more results
+                    </div>
+                </div>
+            </section>
+
+            <!-- Trending Movies Section -->
+            <section class="media-section">
+                <div class="section-header">
+                    <h2>Trending Movies This Week</h2>
+                </div>
+                <div class="media-row-container">
+                    <button class="scroll-arrow scroll-arrow-left hidden" onclick="scrollRow('trendingMovies', 'left')">
+                        ‹
+                    </button>
+                    <div class="media-row" id="trendingMovies"></div>
+                    <button class="scroll-arrow scroll-arrow-right" onclick="scrollRow('trendingMovies', 'right')">
+                        ›
+                    </button>
+                </div>
+            </section>
+
+            <!-- Trending TV Shows Section -->
+            <section class="media-section">
+                <div class="section-header">
+                    <h2>Trending TV Shows This Week</h2>
+                </div>
+                <div class="media-row-container">
+                    <button class="scroll-arrow scroll-arrow-left hidden" onclick="scrollRow('trendingTV', 'left')">
+                        ‹
+                    </button>
+                    <div class="media-row" id="trendingTV"></div>
+                    <button class="scroll-arrow scroll-arrow-right" onclick="scrollRow('trendingTV', 'right')">
+                        ›
+                    </button>
+                </div>
+            </section>
+        </main>
+
+        <!-- Footer -->
+        <footer class="homepage-footer">
+            <div class="footer-content">
+                <div class="tmdb-attribution">
+                    <a href="https://www.themoviedb.org" target="_blank" rel="noopener">
+                        <img src="/static/img/tmdb-logo.svg" alt="TMDB" class="tmdb-logo">
+                    </a>
+                    <p class="tmdb-text">
+                        This product uses the TMDB API but is not endorsed or certified by TMDB.
+                    </p>
+                </div>
+            </div>
+        </footer>
+    </div>
+
+    <!-- Retention Selection Modal -->
+    <div class="modal-backdrop" id="retentionModal">
+        <div class="modal-content">
+            <button class="modal-close" onclick="closeRetentionModal()">×</button>
+            <div class="modal-header">
+                <h2 id="modalTitle">Request Media</h2>
+                <p id="modalSubtitle">Choose how long to keep this content</p>
+            </div>
+            
+            <div class="retention-options">
+                <label class="retention-option">
+                    <input type="radio" name="retention" value="forever">
+                    <div class="retention-option-content">
+                        <div class="retention-option-title">Keep Forever</div>
+                        <div class="retention-option-description">
+                            This content will never be automatically deleted. Perfect for favorites and rewatchable content.
+                        </div>
+                    </div>
+                </label>
+                
+                <label class="retention-option">
+                    <input type="radio" name="retention" value="watch_once">
+                    <div class="retention-option-content">
+                        <div class="retention-option-title">Watch Once</div>
+                        <div class="retention-option-description">
+                            Automatically delete 30 days after you've watched it. Great for one-time viewing.
+                        </div>
+                    </div>
+                </label>
+                
+                <label class="retention-option" id="watchAsReleasedOption">
+                    <input type="radio" name="retention" value="watch_as_released">
+                    <div class="retention-option-content">
+                        <div class="retention-option-title">Watch As Released</div>
+                        <div class="retention-option-description">
+                            For TV shows: delete episodes after the next one airs. Keeps your library current.
+                        </div>
+                    </div>
+                </label>
+            </div>
+            
+            <div class="modal-actions">
+                <button class="btn btn-secondary" onclick="closeRetentionModal()">Cancel</button>
+                <button class="btn btn-primary disabled" id="submitRequestBtn" onclick="submitRequest()">Submit Request</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Toast Container -->
+    <div class="toast-container" id="toastContainer"></div>
+
+    <script>
+        // Global state
+        let currentMediaRequest = null;
+        let activePolls = new Map();
+        let searchPage = {movies: 1, tv: 1};
+        let searchHasMore = {movies: true, tv: true};
+        let currentQuery = '';
+        
+        // Initialize page
+        document.addEventListener('DOMContentLoaded', function() {
+            loadTrendingMovies();
+            loadTrendingTV();
+            setupSearch();
+            setupRetentionModal();
+            setupScrollArrows();
+        });
+        
+        // Load trending movies
+        async function loadTrendingMovies() {
+            const container = document.getElementById('trendingMovies');
+            container.innerHTML = createSkeletonCards(calculateCardCount());
+            
+            try {
+                const response = await fetch('/api/trending/movies?time_window=week');
+                const data = await response.json();
+                
+                container.innerHTML = '';
+                data.results.forEach(movie => {
+                    container.appendChild(createMediaCard(movie, 'movie'));
+                });
+                
+                updateScrollArrows('trendingMovies');
+            } catch (error) {
+                console.error('Failed to load trending movies:', error);
+                container.innerHTML = '<p style="color: var(--plex-light); padding: 20px;">Failed to load trending movies</p>';
+            }
+        }
+        
+        // Load trending TV shows
+        async function loadTrendingTV() {
+            const container = document.getElementById('trendingTV');
+            container.innerHTML = createSkeletonCards(calculateCardCount());
+            
+            try {
+                const response = await fetch('/api/trending/tv?time_window=week');
+                const data = await response.json();
+                
+                container.innerHTML = '';
+                data.results.forEach(show => {
+                    container.appendChild(createMediaCard(show, 'tv'));
+                });
+                
+                updateScrollArrows('trendingTV');
+            } catch (error) {
+                console.error('Failed to load trending TV:', error);
+                container.innerHTML = '<p style="color: var(--plex-light); padding: 20px;">Failed to load trending TV shows</p>';
+            }
+        }
+        
+        // Calculate number of skeleton cards based on viewport
+        function calculateCardCount() {
+            const cardWidth = parseInt(getComputedStyle(document.documentElement).getPropertyValue('--card-width'));
+            const gap = parseInt(getComputedStyle(document.documentElement).getPropertyValue('--card-gap'));
+            const containerWidth = window.innerWidth - 40; // Account for padding
+            return Math.floor(containerWidth / (cardWidth + gap));
+        }
+        
+        // Create skeleton loading cards
+        function createSkeletonCards(count) {
+            let html = '';
+            for (let i = 0; i < count; i++) {
+                html += '<div class="skeleton-card"></div>';
+            }
+            return html;
+        }
+        
+        // Create media card element
+        function createMediaCard(media, mediaType) {
+            const card = document.createElement('div');
+            card.className = 'media-card';
+            card.setAttribute('data-tmdb-id', media.tmdb_id || media.id);
+            card.setAttribute('data-media-type', mediaType);
+            
+            const title = media.title || media.name;
+            const year = media.year || (media.release_date ? new Date(media.release_date).getFullYear() : '') || (media.first_air_date ? new Date(media.first_air_date).getFullYear() : '');
+            const posterUrl = media.poster_url || (media.poster_path ? `/cache-images/w500${media.poster_path}` : '/static/img/placeholder.jpg');
+            
+            card.innerHTML = `
+                <img src="${posterUrl}" alt="${title}" class="media-card-poster" onerror="this.src='/static/img/placeholder.jpg'">
+                ${media.in_library ? '<div class="library-badge">In Library</div>' : ''}
+                <div class="media-card-overlay">
+                    <h3 class="media-card-title">${title}</h3>
+                    ${year ? `<p class="media-card-year">${year}</p>` : ''}
+                    ${!media.in_library ? `<button class="quick-request-btn" onclick="event.stopPropagation(); openQuickRequest(${media.tmdb_id || media.id}, '${mediaType}', '${title.replace(/'/g, "\\'")}')">Quick Request</button>` : ''}
+                </div>
+            `;
+            
+            card.addEventListener('click', function() {
+                window.location.href = `/media/${mediaType}/${media.tmdb_id || media.id}`;
+            });
+            
+            return card;
+        }
+        
+        // Setup search functionality
+        function setupSearch() {
+            const searchInput = document.getElementById('searchInput');
+            const searchButton = document.getElementById('searchButton');
+            
+            searchInput.addEventListener('keypress', function(e) {
+                if (e.key === 'Enter') {
+                    performSearch();
+                }
+            });
+            
+            searchButton.addEventListener('click', performSearch);
+        }
+        
+        // Perform search
+        async function performSearch() {
+            const query = document.getElementById('searchInput').value.trim();
+            if (!query) return;
+            
+            currentQuery = query;
+            searchPage = {movies: 1, tv: 1};
+            searchHasMore = {movies: true, tv: true};
+            
+            document.getElementById('searchResults').classList.add('active');
+            document.getElementById('searchResultsTitle').textContent = `Results for "${query}"`;
+            
+            // Clear previous results
+            document.getElementById('moviesResults').innerHTML = '';
+            document.getElementById('tvResults').innerHTML = '';
+            
+            // Show loading
+            document.getElementById('moviesLoading').style.display = 'flex';
+            document.getElementById('tvLoading').style.display = 'flex';
+            
+            try {
+                const response = await fetch(`/api/search?query=${encodeURIComponent(query)}&page=1`);
+                const data = await response.json();
+                
+                displaySearchResults(data, 'movies');
+                displaySearchResults(data, 'tv');
+            } catch (error) {
+                console.error('Search failed:', error);
+                document.getElementById('moviesLoading').style.display = 'none';
+                document.getElementById('tvLoading').style.display = 'none';
+            }
+        }
+        
+        // Display search results
+        function displaySearchResults(data, type) {
+            const results = data[type].results;
+            const container = document.getElementById(`${type}Results`);
+            const loading = document.getElementById(`${type}Loading`);
+            const noResults = document.getElementById(`${type}NoResults`);
+            const countSpan = document.getElementById(`${type}Count`);
+            
+            loading.style.display = 'none';
+            
+            if (results.length === 0 && searchPage[type] === 1) {
+                noResults.style.display = 'block';
+                countSpan.textContent = '(0)';
+            } else {
+                noResults.style.display = 'none';
+                countSpan.textContent = `(${data[type].total_results})`;
+                
+                results.forEach(item => {
+                    container.appendChild(createMediaCard(item, type === 'movies' ? 'movie' : 'tv'));
+                });
+                
+                searchHasMore[type] = searchPage[type] < data[type].total_pages;
+                
+                if (!searchHasMore[type] && results.length > 0) {
+                    document.getElementById(`${type}EndMessage`).style.display = 'block';
+                }
+            }
+        }
+        
+        // Switch search tab
+        function switchSearchTab(tab) {
+            document.querySelectorAll('.search-tab').forEach(t => t.classList.remove('active'));
+            document.querySelectorAll('.search-tab-content').forEach(c => c.classList.remove('active'));
+            
+            document.querySelector(`[data-tab="${tab}"]`).classList.add('active');
+            document.getElementById(`${tab}Tab`).classList.add('active');
+        }
+        
+        // Clear search
+        function clearSearch() {
+            document.getElementById('searchResults').classList.remove('active');
+            document.getElementById('searchInput').value = '';
+            currentQuery = '';
+        }
+        
+        // Open quick request modal
+        function openQuickRequest(tmdbId, mediaType, title) {
+            currentMediaRequest = {tmdbId, mediaType, title};
+            
+            document.getElementById('modalTitle').textContent = `Request: ${title}`;
+            document.getElementById('retentionModal').classList.add('active');
+            
+            // Show/hide watch_as_released option based on media type
+            const watchAsReleasedOption = document.getElementById('watchAsReleasedOption');
+            if (mediaType === 'movie') {
+                watchAsReleasedOption.style.display = 'none';
+            } else {
+                watchAsReleasedOption.style.display = 'flex';
+            }
+            
+            // Reset selection
+            document.querySelectorAll('input[name="retention"]').forEach(input => input.checked = false);
+            document.getElementById('submitRequestBtn').classList.add('disabled');
+        }
+        
+        // Setup retention modal
+        function setupRetentionModal() {
+            document.querySelectorAll('input[name="retention"]').forEach(input => {
+                input.addEventListener('change', function() {
+                    document.getElementById('submitRequestBtn').classList.remove('disabled');
+                });
+            });
+            
+            // Close on backdrop click
+            document.getElementById('retentionModal').addEventListener('click', function(e) {
+                if (e.target === this) {
+                    closeRetentionModal();
+                }
+            });
+        }
+        
+        // Close retention modal
+        function closeRetentionModal() {
+            document.getElementById('retentionModal').classList.remove('active');
+            currentMediaRequest = null;
+        }
+        
+        // Submit request
+        async function submitRequest() {
+            const selectedRetention = document.querySelector('input[name="retention"]:checked');
+            if (!selectedRetention || !currentMediaRequest) return;
+            
+            const retentionType = selectedRetention.value;
+            
+            closeRetentionModal();
+            
+            const requestData = {
+                tmdb_id: currentMediaRequest.tmdbId,
+                media_type: currentMediaRequest.mediaType,
+                retention_type: retentionType
+            };
+            
+            // For TV shows, request all seasons
+            if (currentMediaRequest.mediaType === 'tv') {
+                requestData.seasons = null; // null = all seasons
+            }
+            
+            try {
+                const response = await fetch('/api/media/request-unified', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify(requestData)
+                });
+                
+                const result = await response.json();
+                
+                if (response.ok) {
+                    showToast('Request Submitted', `${currentMediaRequest.title} has been added to the download queue`, 'submitted');
+                    
+                    // Start polling for status
+                    if (result.media_request_id) {
+                        startPolling(result.media_request_id, currentMediaRequest.title);
+                    }
+                } else {
+                    showToast('Request Failed', result.detail || 'Failed to submit request', 'failed');
+                }
+            } catch (error) {
+                console.error('Request failed:', error);
+                showToast('Request Failed', 'Network error occurred', 'failed');
+            }
+        }
+        
+        // Start status polling
+        function startPolling(requestId, title) {
+            if (activePolls.has(requestId)) return;
+            
+            const toastId = 'toast-' + requestId;
+            
+            const poll = setInterval(async () => {
+                try {
+                    const response = await fetch(`/api/requests/${requestId}/status`);
+                    const data = await response.json();
+                    
+                    if (data.status === 'downloading') {
+                        updateToast(toastId, 'Downloading', `${title} - ${data.progress}%`, 'downloading');
+                    } else if (data.status === 'processing') {
+                        updateToast(toastId, 'Processing', `${title} - Copying files to Plex`, 'downloading');
+                    } else if (data.status === 'available') {
+                        updateToast(toastId, 'Available', `${title} is ready in Plex!`, 'available');
+                        clearInterval(poll);
+                        activePolls.delete(requestId);
+                        
+                        // Auto-close after 5 seconds
+                        setTimeout(() => removeToast(toastId), 5000);
+                    } else if (data.status === 'failed') {
+                        updateToast(toastId, 'Failed', `${title} download failed`, 'failed');
+                        clearInterval(poll);
+                        activePolls.delete(requestId);
+                    }
+                } catch (error) {
+                    console.error('Polling error:', error);
+                }
+            }, 10000); // Poll every 10 seconds
+            
+            activePolls.set(requestId, poll);
+        }
+        
+        // Show toast notification
+        function showToast(title, message, status) {
+            const container = document.getElementById('toastContainer');
+            const toast = document.createElement('div');
+            const toastId = 'toast-' + Date.now();
+            toast.id = toastId;
+            toast.className = `toast ${status}`;
+            
+            toast.innerHTML = `
+                <div class="toast-icon">${status === 'available' ? '✓' : status === 'failed' ? '✗' : 'ℹ'}</div>
+                <div class="toast-content">
+                    <div class="toast-title">${title}</div>
+                    <div class="toast-message">${message}</div>
+                </div>
+                <button class="toast-close" onclick="removeToast('${toastId}')">×</button>
+            `;
+            
+            container.appendChild(toast);
+            
+            return toastId;
+        }
+        
+        // Update existing toast
+        function updateToast(toastId, title, message, status) {
+            const toast = document.getElementById(toastId);
+            if (!toast) {
+                showToast(title, message, status);
+                return;
+            }
+            
+            toast.className = `toast ${status}`;
+            toast.querySelector('.toast-title').textContent = title;
+            toast.querySelector('.toast-message').textContent = message;
+            toast.querySelector('.toast-icon').textContent = status === 'available' ? '✓' : status === 'failed' ? '✗' : 'ℹ';
+        }
+        
+        // Remove toast
+        function removeToast(toastId) {
+            const toast = document.getElementById(toastId);
+            if (toast) {
+                toast.style.animation = 'slideInRight 0.3s reverse';
+                setTimeout(() => toast.remove(), 300);
+            }
+        }
+        
+        // Scroll row
+        function scrollRow(rowId, direction) {
+            const row = document.getElementById(rowId);
+            const cardWidth = parseInt(getComputedStyle(document.documentElement).getPropertyValue('--card-width'));
+            const gap = parseInt(getComputedStyle(document.documentElement).getPropertyValue('--card-gap'));
+            const scrollAmount = (cardWidth + gap) * 3; // Scroll 3 cards at a time
+            
+            row.scrollBy({
+                left: direction === 'left' ? -scrollAmount : scrollAmount,
+                behavior: 'smooth'
+            });
+            
+            setTimeout(() => updateScrollArrows(rowId), 300);
+        }
+        
+        // Setup scroll arrows
+        function setupScrollArrows() {
+            document.querySelectorAll('.media-row').forEach(row => {
+                row.addEventListener('scroll', function() {
+                    updateScrollArrows(this.id);
+                });
+                
+                // Support mouse drag scrolling for desktop
+                let isDown = false;
+                let startX;
+                let scrollLeft;
+                
+                row.addEventListener('mousedown', (e) => {
+                    isDown = true;
+                    row.style.cursor = 'grabbing';
+                    row.style.userSelect = 'none';
+                    startX = e.pageX - row.offsetLeft;
+                    scrollLeft = row.scrollLeft;
+                });
+                
+                row.addEventListener('mouseleave', () => {
+                    isDown = false;
+                    row.style.cursor = 'grab';
+                });
+                
+                row.addEventListener('mouseup', () => {
+                    isDown = false;
+                    row.style.cursor = 'grab';
+                });
+                
+                row.addEventListener('mousemove', (e) => {
+                    if (!isDown) return;
+                    e.preventDefault();
+                    const x = e.pageX - row.offsetLeft;
+                    const walk = (x - startX) * 2;
+                    row.scrollLeft = scrollLeft - walk;
+                });
+                
+                // Support touch gestures for mobile
+                let touchStartX = 0;
+                let touchScrollLeft = 0;
+                
+                row.addEventListener('touchstart', function(e) {
+                    touchStartX = e.touches[0].pageX;
+                    touchScrollLeft = row.scrollLeft;
+                });
+                
+                row.addEventListener('touchmove', function(e) {
+                    const x = e.touches[0].pageX;
+                    const walk = (touchStartX - x) * 2;
+                    row.scrollLeft = touchScrollLeft + walk;
+                });
+                
+                // Set initial cursor
+                row.style.cursor = 'grab';
+            });
+            
+            // Update on window resize
+            window.addEventListener('resize', function() {
+                document.querySelectorAll('.media-row').forEach(row => {
+                    if (row.id) updateScrollArrows(row.id);
+                });
+            });
+        }
+        
+        // Update scroll arrow visibility
+        function updateScrollArrows(rowId) {
+            const row = document.getElementById(rowId);
+            if (!row) return;
+            
+            const container = row.parentElement;
+            const leftArrow = container.querySelector('.scroll-arrow-left');
+            const rightArrow = container.querySelector('.scroll-arrow-right');
+            
+            if (!leftArrow || !rightArrow) return;
+            
+            const isAtStart = row.scrollLeft <= 0;
+            const isAtEnd = row.scrollLeft + row.clientWidth >= row.scrollWidth - 1;
+            
+            leftArrow.classList.toggle('hidden', isAtStart);
+            rightArrow.classList.toggle('hidden', isAtEnd);
+        }
+        
+        // Logout function
+        function logout() {
+            document.cookie = 'access_token=; expires=Thu, 01 Jan 1970 00:00:00 UTC; path=/;';
+            window.location.href = '/';
+        }
+    </script>
+</body>
+</html>

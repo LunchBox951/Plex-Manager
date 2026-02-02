@@ -158,11 +158,11 @@ def get_episode_count_from_tmdb(tmdb_id: int, season_number: int, db_session) ->
     Returns:
         Episode count from cache or None if not cached
     """
-    from src.models import TMDBCache
+    from src.models import TMDBSeasonCache
     
-    cache_entry = db_session.query(TMDBCache).filter(
-        TMDBCache.tmdb_id == tmdb_id,
-        TMDBCache.season_number == season_number
+    cache_entry = db_session.query(TMDBSeasonCache).filter(
+        TMDBSeasonCache.tmdb_id == tmdb_id,
+        TMDBSeasonCache.season_number == season_number
     ).first()
     
     if cache_entry:

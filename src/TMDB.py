@@ -730,14 +730,14 @@ def get_season_episode_count(
         >>> count = get_season_episode_count(1396, 1, db)  # Breaking Bad S01
         >>> print(count)  # 7
     """
-    from src.models import TMDBCache
+    from src.models import TMDBSeasonCache
     
     logger.info(f"Getting episode count for TMDB {tmdb_id} Season {season_number}")
     
     # Check cache first
-    cache_entry = db_session.query(TMDBCache).filter(
-        TMDBCache.tmdb_id == tmdb_id,
-        TMDBCache.season_number == season_number
+    cache_entry = db_session.query(TMDBSeasonCache).filter(
+        TMDBSeasonCache.tmdb_id == tmdb_id,
+        TMDBSeasonCache.season_number == season_number
     ).first()
     
     current_date = date.today()
@@ -798,7 +798,7 @@ def get_season_episode_count(
             cache_entry.next_episode_air_date = next_episode_air_date
             cache_entry.updated_at = datetime.utcnow()
         else:
-            cache_entry = TMDBCache(
+            cache_entry = TMDBSeasonCache(
                 tmdb_id=tmdb_id,
                 season_number=season_number,
                 episode_count=episode_count,
@@ -842,16 +842,16 @@ def refresh_ongoing_seasons_cache(db_session) -> int:
         ... )
         >>> scheduler.start()
     """
-    from src.models import TMDBCache
+    from src.models import TMDBSeasonCache
     
     current_date = date.today()
     logger.info(f"Refreshing ongoing season caches (date: {current_date})")
     
     try:
         # Find ongoing seasons that need refresh
-        expired_entries = db_session.query(TMDBCache).filter(
-            TMDBCache.season_status == 'ongoing',
-            TMDBCache.next_episode_air_date <= current_date
+        expired_entries = db_session.query(TMDBSeasonCache).filter(
+            TMDBSeasonCache.season_status == 'ongoing',
+            TMDBSeasonCache.next_episode_air_date <= current_date
         ).all()
         
         logger.info(f"Found {len(expired_entries)} ongoing seasons to refresh")
@@ -910,4 +910,286 @@ def refresh_ongoing_seasons_cache(db_session) -> int:
         logger.error(f"Failed to refresh ongoing seasons: {e}")
         db_session.rollback()
         return 0
+
+
+# ============================================================================
+# Homepage Caching System for Trending and Search
+# ============================================================================
+
+def download_image(path: str, size: str = 'w500', cache_type: str = 'trending') -> Optional[str]:
+    """
+    Download TMDB image to local cache directory.
+    
+    Args:
+        path: TMDB image path (e.g., '/abc123.jpg')
+        size: Image size ('w500' for all images)
+        cache_type: 'trending' (7 day TTL) or 'search' (24h TTL)
+        
+    Returns:
+        Local file path relative to cache directory, or None if download fails
+    """
+    import requests
+    import hashlib
+    
+    if not path:
+        return None
+    
+    # Ensure cache directory exists
+    cache_dir = os.path.join('cache', 'images', size)
+    os.makedirs(cache_dir, exist_ok=True)
+    
+    # Generate filename from path hash
+    filename = path.lstrip('/').replace('/', '_')
+    file_path = os.path.join(cache_dir, filename)
+    
+    # Check if file already exists
+    if os.path.exists(file_path):
+        return f"w500/{filename}"
+    
+    # Download image
+    try:
+        image_url = f"https://image.tmdb.org/t/p/{size}{path}"
+        response = requests.get(image_url, timeout=10)
+        response.raise_for_status()
+        
+        # Save to cache
+        with open(file_path, 'wb') as f:
+            f.write(response.content)
+        
+        # Update metadata
+        metadata_file = os.path.join('cache', 'image_metadata.json')
+        metadata = {}
+        if os.path.exists(metadata_file):
+            with open(metadata_file, 'r') as f:
+                metadata = json.load(f)
+        
+        metadata[filename] = {
+            'cache_type': cache_type,
+            'downloaded_at': datetime.utcnow().isoformat(),
+            'path': path,
+            'size': size
+        }
+        
+        with open(metadata_file, 'w') as f:
+            json.dump(metadata, f, indent=2)
+        
+        logger.info(f"Downloaded TMDB image: {filename}")
+        return f"w500/{filename}"
+        
+    except Exception as e:
+        logger.error(f"Failed to download image {path}: {e}")
+        return None
+
+
+def get_or_fetch_trending(media_type: str, time_window: str = 'week', force_refresh: bool = False) -> List[Dict[str, Any]]:
+    """
+    Get trending media from cache or fetch from TMDB API.
+    
+    Args:
+        media_type: 'movie' or 'tv'
+        time_window: 'day' or 'week'
+        force_refresh: Bypass cache and fetch fresh data
+        
+    Returns:
+        List of trending media with cached image URLs
+    """
+    import hashlib
+    from src.database import get_db
+    from src.models import TMDBCache
+    
+    # Generate cache key
+    cache_key = hashlib.md5(f"trending_{media_type}_{time_window}".encode()).hexdigest()
+    
+    # Check database cache if not forcing refresh
+    if not force_refresh:
+        db = next(get_db())
+        try:
+            cache_entry = db.query(TMDBCache).filter(
+                TMDBCache.cache_key == cache_key,
+                TMDBCache.expires_at > datetime.utcnow()
+            ).first()
+            
+            if cache_entry:
+                logger.info(f"Cache hit for trending {media_type}")
+                return json.loads(cache_entry.data_json)
+        finally:
+            db.close()
+    
+    # Fetch from TMDB API
+    logger.info(f"Fetching trending {media_type} from TMDB API")
+    results = get_trending(media_type, time_window)
+    
+    # Download images to cache
+    for item in results:
+        if item.get('poster_path'):
+            cached_path = download_image(item['poster_path'], 'w500', 'trending')
+            if cached_path:
+                item['poster_url'] = f"/cache-images/{cached_path}"
+        
+        if item.get('backdrop_path'):
+            cached_path = download_image(item['backdrop_path'], 'w500', 'trending')
+            if cached_path:
+                item['backdrop_url'] = f"/cache-images/{cached_path}"
+    
+    # Store in database cache with 7-day TTL
+    db = next(get_db())
+    try:
+        expires_at = datetime.utcnow() + timedelta(days=7)
+        
+        # Update or create cache entry
+        cache_entry = db.query(TMDBCache).filter(TMDBCache.cache_key == cache_key).first()
+        if cache_entry:
+            cache_entry.data_json = json.dumps(results)
+            cache_entry.expires_at = expires_at
+            cache_entry.created_at = datetime.utcnow()
+        else:
+            cache_entry = TMDBCache(
+                cache_key=cache_key,
+                cache_type='trending',
+                data_json=json.dumps(results),
+                expires_at=expires_at
+            )
+            db.add(cache_entry)
+        
+        db.commit()
+        logger.info(f"Cached trending {media_type} until {expires_at}")
+    finally:
+        db.close()
+    
+    return results
+
+
+def get_or_fetch_search(query: str, user_id: int, page: int = 1, media_type: str = 'multi') -> Dict[str, Any]:
+    """
+    Get search results from cache or fetch from TMDB API.
+    
+    Args:
+        query: Search query string
+        user_id: User ID for search history
+        page: Page number (20 results per page)
+        media_type: 'movie', 'tv', or 'multi'
+        
+    Returns:
+        Dictionary with 'movies' and 'tv' arrays containing search results
+    """
+    import hashlib
+    from src.database import get_db
+    from src.models import TMDBCache, SearchCache
+    
+    # Normalize query
+    normalized_query = _normalize_query(query)
+    
+    # Generate cache key
+    cache_key = hashlib.md5(f"search_{normalized_query}_{page}_{media_type}".encode()).hexdigest()
+    
+    # Check database cache
+    db = next(get_db())
+    try:
+        cache_entry = db.query(TMDBCache).filter(
+            TMDBCache.cache_key == cache_key,
+            TMDBCache.expires_at > datetime.utcnow()
+        ).first()
+        
+        if cache_entry:
+            logger.info(f"Cache hit for search: {query} (page {page})")
+            
+            # Record search in user history
+            search_cache = SearchCache(
+                user_id=user_id,
+                query=normalized_query,
+                cache_key=cache_key
+            )
+            db.add(search_cache)
+            db.commit()
+            
+            return json.loads(cache_entry.data_json)
+    finally:
+        db.close()
+    
+    # Fetch from TMDB API
+    logger.info(f"Searching TMDB for: {query} (page {page})")
+    
+    if media_type == 'multi':
+        # Search both movies and TV shows
+        movies = search_movies(query, user_id) or []
+        tv_shows = search_tv(query, user_id) or []
+        
+        results = {
+            'movies': {
+                'results': movies[:20] if movies else [],
+                'page': page,
+                'total_pages': (len(movies) // 20) + 1 if movies else 0,
+                'total_results': len(movies) if movies else 0
+            },
+            'tv': {
+                'results': tv_shows[:20] if tv_shows else [],
+                'page': page,
+                'total_pages': (len(tv_shows) // 20) + 1 if tv_shows else 0,
+                'total_results': len(tv_shows) if tv_shows else 0
+            }
+        }
+    elif media_type == 'movie':
+        movies = search_movies(query, user_id, page=page) or []
+        results = {
+            'movies': {
+                'results': movies[:20] if movies else [],
+                'page': page,
+                'total_pages': (len(movies) // 20) + 1 if movies else 0,
+                'total_results': len(movies) if movies else 0
+            },
+            'tv': {'results': [], 'page': 1, 'total_pages': 0, 'total_results': 0}
+        }
+    else:  # tv
+        tv_shows = search_tv(query, user_id, page=page) or []
+        results = {
+            'movies': {'results': [], 'page': 1, 'total_pages': 0, 'total_results': 0},
+            'tv': {
+                'results': tv_shows[:20] if tv_shows else [],
+                'page': page,
+                'total_pages': (len(tv_shows) // 20) + 1 if tv_shows else 0,
+                'total_results': len(tv_shows) if tv_shows else 0
+            }
+        }
+    
+    # Download images to cache
+    for media_list in [results['movies']['results'], results['tv']['results']]:
+        for item in media_list:
+            if item.get('poster_path'):
+                cached_path = download_image(item['poster_path'], 'w500', 'search')
+                if cached_path:
+                    item['poster_url'] = f"/cache-images/{cached_path}"
+            
+            if item.get('backdrop_path'):
+                cached_path = download_image(item['backdrop_path'], 'w500', 'search')
+                if cached_path:
+                    item['backdrop_url'] = f"/cache-images/{cached_path}"
+    
+    # Store in database cache with 24-hour TTL
+    db = next(get_db())
+    try:
+        expires_at = datetime.utcnow() + timedelta(hours=24)
+        
+        cache_entry = TMDBCache(
+            cache_key=cache_key,
+            cache_type='search',
+            data_json=json.dumps(results),
+            expires_at=expires_at
+        )
+        db.add(cache_entry)
+        
+        # Record in user search history
+        search_cache = SearchCache(
+            user_id=user_id,
+            query=normalized_query,
+            cache_key=cache_key
+        )
+        db.add(search_cache)
+        
+        db.commit()
+        logger.info(f"Cached search '{query}' until {expires_at}")
+    finally:
+        db.close()
+    
+    return results
+
 
