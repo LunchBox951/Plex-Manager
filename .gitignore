@@ -21,6 +21,12 @@ env/
 venv/
 ENV/
 .venv
+*.pyc
+
+# Testing artifacts (removed from repo)
+tests/
+test_results/
+migrations/
 
 # IDE
 .vscode/
