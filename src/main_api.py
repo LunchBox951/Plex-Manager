@@ -494,6 +494,15 @@ async def media_details_page(
             plex_check = check_media_exists(title, year, media_type)
             media_data['in_library'] = plex_check.get('exists', False)
             media_data['plex_title'] = plex_check.get('plex_title', '')
+            
+            # Add Plex artwork URLs with fallback chain
+            # Priority: Plex artwork -> TMDB poster_url -> TMDB poster_path -> placeholder
+            if plex_check.get('plex_poster_url'):
+                media_data['poster_url'] = plex_check['plex_poster_url']
+            
+            if plex_check.get('plex_backdrop_url'):
+                media_data['backdrop_url'] = plex_check['plex_backdrop_url']
+            
         except Exception as e:
             print(f"Error checking Plex: {e}")
             media_data['in_library'] = False
@@ -652,10 +661,11 @@ async def get_season_episodes(
     db: Session = Depends(get_db)
 ):
     """
-    Get episode details for a specific season with TMDB still images.
-    Returns episode list with numbers, names, overviews, air dates, and still paths.
+    Get episode details for a specific season with TMDB still images and Plex availability.
+    Returns episode list with numbers, names, overviews, air dates, still paths, and Plex availability flags.
     """
-    from src.TMDB import safe_tmdb_call, season_service, download_image
+    from src.TMDB import safe_tmdb_call, season_service, download_image, get_tv_details
+    from src.plex import check_media_exists
     import logging
     logger = logging.getLogger(__name__)
     
@@ -671,6 +681,28 @@ async def get_season_episodes(
                 "episodes": []
             }
         
+        # Get TV show info for Plex checking
+        tv_details = get_tv_details(tmdb_id)
+        title = tv_details.get('name') if tv_details else None
+        year = tv_details.get('year') if tv_details else None
+        
+        # Check Plex for available episodes in this season
+        plex_available_episodes = set()
+        if title and year:
+            try:
+                plex_result = check_media_exists(
+                    tmdb_title=title,
+                    year=year,
+                    media_type='tv',
+                    season=season_number
+                )
+                
+                if plex_result.get('exists') and plex_result.get('existing_episodes'):
+                    plex_available_episodes = set(plex_result['existing_episodes'])
+                    logger.info(f"Found {len(plex_available_episodes)} episodes in Plex for S{season_number}")
+            except Exception as plex_error:
+                logger.warning(f"Error checking Plex availability: {plex_error}")
+        
         # Extract episode information and download still images
         episodes = []
         for ep in season_details.episodes:
@@ -680,13 +712,16 @@ async def get_season_episodes(
             if still_path:
                 download_image(still_path, size='w185', cache_type='trending')
             
+            episode_number = ep.episode_number if hasattr(ep, 'episode_number') else 0
+            
             episode_info = {
-                "episode_number": ep.episode_number if hasattr(ep, 'episode_number') else 0,
-                "name": ep.name if hasattr(ep, 'name') else f'Episode {ep.episode_number if hasattr(ep, "episode_number") else 0}',
+                "episode_number": episode_number,
+                "name": ep.name if hasattr(ep, 'name') else f'Episode {episode_number}',
                 "overview": ep.overview if hasattr(ep, 'overview') else 'No description available.',
                 "air_date": ep.air_date if hasattr(ep, 'air_date') else None,
                 "still_path": still_path,
-                "vote_average": ep.vote_average if hasattr(ep, 'vote_average') else 0
+                "vote_average": ep.vote_average if hasattr(ep, 'vote_average') else 0,
+                "available_in_plex": episode_number in plex_available_episodes
             }
             episodes.append(episode_info)
         

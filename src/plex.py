@@ -122,6 +122,7 @@ def check_media_exists(
     
     Uses fuzzy title matching (normalized, ±1 year tolerance) to find existing media.
     For TV shows, checks which episodes are present to avoid duplicate downloads.
+    Also returns Plex artwork URLs when media is found.
     
     Args:
         tmdb_title: Canonical title from TMDB
@@ -135,16 +136,19 @@ def check_media_exists(
             - exists (bool): Media found in Plex
             - partial (bool): Some but not all episodes exist (TV only)
             - missing_episodes (list): Episode numbers not in Plex (TV only)
+            - existing_episodes (list): Episode numbers in Plex (TV only)
             - plex_title (str): Matched title in Plex library
+            - plex_poster_url (str): Full URL to Plex poster artwork
+            - plex_backdrop_url (str): Full URL to Plex backdrop artwork
             
     Examples:
         # Movie check
         >>> check_media_exists("Inception", 2010, "movie")
-        {"exists": True, "plex_title": "Inception"}
+        {"exists": True, "plex_title": "Inception", "plex_poster_url": "...", "plex_backdrop_url": "..."}
         
         # TV show - full season
         >>> check_media_exists("Breaking Bad", 2008, "tv", season=1)
-        {"exists": True, "partial": False, "plex_title": "Breaking Bad"}
+        {"exists": True, "partial": False, "plex_title": "Breaking Bad", "existing_episodes": [1,2,3,4,5,6,7]}
         
         # TV show - partial season
         >>> check_media_exists("Breaking Bad", 2008, "tv", season=1, episodes=[1,2,3,4,5,6,7,8,9,10])
@@ -173,17 +177,37 @@ def check_media_exists(
                 
                 # Check year match (±1 year tolerance)
                 item_year = getattr(item, 'year', None)
-                if item_year and year and abs(item_year - year) > 1:
-                    continue
+                if item_year and year:
+                    # Ensure both are integers for comparison
+                    try:
+                        year_int = int(year) if isinstance(year, str) else year
+                        if abs(item_year - year_int) > 1:
+                            continue
+                    except (ValueError, TypeError):
+                        # If year conversion fails, skip year check
+                        pass
                 
                 # Match found!
                 logger.info(f"Found match in Plex: {item.title} ({item_year})")
+                
+                # Get artwork URLs from Plex
+                plex_poster_url = None
+                plex_backdrop_url = None
+                try:
+                    if hasattr(item, 'thumb') and item.thumb:
+                        plex_poster_url = plex.url(item.thumb, includeToken=True)
+                    if hasattr(item, 'art') and item.art:
+                        plex_backdrop_url = plex.url(item.art, includeToken=True)
+                except Exception as art_error:
+                    logger.warning(f"Failed to get Plex artwork URLs: {art_error}")
                 
                 # For movies, simple existence check
                 if media_type == 'movie':
                     return {
                         "exists": True,
-                        "plex_title": item.title
+                        "plex_title": item.title,
+                        "plex_poster_url": plex_poster_url,
+                        "plex_backdrop_url": plex_backdrop_url
                     }
                 
                 # For TV shows, check episode availability
@@ -198,7 +222,9 @@ def check_media_exists(
                                 "exists": True,
                                 "partial": False,
                                 "plex_title": item.title,
-                                "existing_episodes": sorted(existing_episodes)
+                                "existing_episodes": sorted(existing_episodes),
+                                "plex_poster_url": plex_poster_url,
+                                "plex_backdrop_url": plex_backdrop_url
                             }
                         
                         # Check which requested episodes are missing
@@ -210,7 +236,10 @@ def check_media_exists(
                             return {
                                 "exists": True,
                                 "partial": False,
-                                "plex_title": item.title
+                                "plex_title": item.title,
+                                "existing_episodes": sorted(existing_episodes),
+                                "plex_poster_url": plex_poster_url,
+                                "plex_backdrop_url": plex_backdrop_url
                             }
                         elif len(missing_episodes) < len(episodes):
                             # Partial match
@@ -218,7 +247,10 @@ def check_media_exists(
                                 "exists": True,
                                 "partial": True,
                                 "missing_episodes": missing_episodes,
-                                "plex_title": item.title
+                                "existing_episodes": sorted(existing_episodes),
+                                "plex_title": item.title,
+                                "plex_poster_url": plex_poster_url,
+                                "plex_backdrop_url": plex_backdrop_url
                             }
                         else:
                             # No episodes exist from requested list
@@ -238,7 +270,9 @@ def check_media_exists(
                 # Matched but no season specified for TV
                 return {
                     "exists": True,
-                    "plex_title": item.title
+                    "plex_title": item.title,
+                    "plex_poster_url": plex_poster_url,
+                    "plex_backdrop_url": plex_backdrop_url
                 }
         
         # No match found

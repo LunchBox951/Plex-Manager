@@ -348,3 +348,45 @@ class SearchCache(Base):
             "searched_at": self.searched_at.isoformat() if self.searched_at else None
         }
 
+
+class AuditLog(Base):
+    """
+    Audit trail for tracking user actions and system changes.
+    Provides accountability and debugging information for retention changes and media requests.
+    """
+    __tablename__ = "audit_logs"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey('users.id'), nullable=False, index=True)
+    action_type = Column(String, nullable=False, index=True)  # 'retention_change', 'request_created', etc.
+    entity_type = Column(String, nullable=False)  # 'media_request', 'episode', etc.
+    entity_id = Column(Integer, nullable=True, index=True)  # ID of affected entity
+    
+    # Change tracking
+    old_value = Column(Text, nullable=True)  # JSON of old state
+    new_value = Column(Text, nullable=True)  # JSON of new state
+    description = Column(String, nullable=True)  # Human-readable description
+    
+    # Context
+    ip_address = Column(String, nullable=True)
+    user_agent = Column(String, nullable=True)
+    
+    # Timestamp
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+    
+    def to_dict(self):
+        """Convert audit log entry to dictionary."""
+        return {
+            "id": self.id,
+            "user_id": self.user_id,
+            "action_type": self.action_type,
+            "entity_type": self.entity_type,
+            "entity_id": self.entity_id,
+            "old_value": self.old_value,
+            "new_value": self.new_value,
+            "description": self.description,
+            "ip_address": self.ip_address,
+            "user_agent": self.user_agent,
+            "created_at": self.created_at.isoformat() if self.created_at else None
+        }
+

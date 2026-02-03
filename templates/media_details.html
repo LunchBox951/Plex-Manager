@@ -55,8 +55,8 @@
                         </div>
                         
                         {% if media.in_library %}
-                        <button class="request-btn disabled">
-                            ✓ In Library
+                        <button class="request-btn" onclick="openManageRequestModal()">
+                            Manage Request
                         </button>
                         {% else %}
                         <button class="request-btn" onclick="openRequestModal()">
@@ -245,6 +245,56 @@
         </div>
     </div>
 
+    <!-- Manage Request Modal (for available media) -->
+    <div class="modal-backdrop" id="manageRequestModal">
+        <div class="modal-content manage-request-content">
+            <button class="modal-close" onclick="closeManageRequestModal()">×</button>
+            <div class="modal-header">
+                <h2>Manage: {{ media.title or media.name }}</h2>
+                <p>Update retention settings for this content</p>
+            </div>
+            
+            <div class="retention-options">
+                <label class="retention-option">
+                    <input type="radio" name="manage-retention" value="forever">
+                    <div class="retention-option-content">
+                        <div class="retention-option-title">Keep Forever</div>
+                        <div class="retention-option-description">
+                            This content will never be automatically deleted.
+                        </div>
+                    </div>
+                </label>
+                
+                <label class="retention-option">
+                    <input type="radio" name="manage-retention" value="watch_once">
+                    <div class="retention-option-content">
+                        <div class="retention-option-title">Watch Once</div>
+                        <div class="retention-option-description">
+                            Automatically delete 30 days after you've watched it.
+                        </div>
+                    </div>
+                </label>
+                
+                {% if media_type == 'tv' %}
+                <label class="retention-option">
+                    <input type="radio" name="manage-retention" value="watch_as_released">
+                    <div class="retention-option-content">
+                        <div class="retention-option-title">Watch As Released</div>
+                        <div class="retention-option-description">
+                            Delete 7 days after watching (once next episode airs).
+                        </div>
+                    </div>
+                </label>
+                {% endif %}
+            </div>
+            
+            <div class="modal-actions">
+                <button class="btn btn-secondary" onclick="closeManageRequestModal()">Cancel</button>
+                <button class="btn btn-primary" id="updateRetentionBtn" onclick="updateRetention()">Update Retention</button>
+            </div>
+        </div>
+    </div>
+
     <!-- Toast Container -->
     <div class="toast-container" id="toastContainer"></div>
 
@@ -384,6 +434,7 @@
                             <div class="episode-meta">
                                 <span class="episode-air-date">${airDate}</span>
                                 ${episode.vote_average > 0 ? `<span class="episode-rating">⭐ ${episode.vote_average.toFixed(1)}</span>` : ''}
+                                ${episode.available_in_plex ? `<span class="episode-available">✓ Available</span>` : ''}
                             </div>
                             <p class="episode-overview">${overview}</p>
                         </div>
@@ -425,6 +476,93 @@
         // Close request modal
         function closeRequestModal() {
             document.getElementById('retentionModal').classList.remove('active');
+        }
+
+        // Manage Request Modal Functions
+        let currentRequestId = null;
+        
+        async function openManageRequestModal() {
+            const modal = document.getElementById('manageRequestModal');
+            
+            // Fetch current request data
+            try {
+                const response = await fetch(`/api/requests/by-media?tmdb_id=${mediaData.tmdb_id}`);
+                if (!response.ok) {
+                    // No existing request - create one as available
+                    await createAvailableRequest();
+                    return;
+                }
+                
+                const request = await response.json();
+                currentRequestId = request.id;
+                
+                // Pre-select current retention type
+                const retentionInput = document.querySelector(`input[name="manage-retention"][value="${request.retention_type}"]`);
+                if (retentionInput) {
+                    retentionInput.checked = true;
+                }
+                
+                modal.classList.add('active');
+            } catch (error) {
+                console.error('Error fetching request:', error);
+                showToast('Error', 'Failed to load request data', 'failed');
+            }
+        }
+        
+        function closeManageRequestModal() {
+            document.getElementById('manageRequestModal').classList.remove('active');
+            currentRequestId = null;
+        }
+        
+        async function createAvailableRequest() {
+            // Create a request with status='available'
+            try {
+                const response = await fetch('/api/manage', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({
+                        tmdb_id: mediaData.tmdb_id,
+                        media_type: mediaData.media_type,
+                        retention_type: 'watch_once'  // Default
+                    })
+                });
+                
+                if (!response.ok) throw new Error('Failed to create request');
+                
+                const data = await response.json();
+                currentRequestId = data.id;
+                
+                // Now open the modal
+                openManageRequestModal();
+            } catch (error) {
+                console.error('Error creating available request:', error);
+                showToast('Error', 'Failed to create request', 'failed');
+            }
+        }
+        
+        async function updateRetention() {
+            const selectedRetention = document.querySelector('input[name="manage-retention"]:checked');
+            if (!selectedRetention || !currentRequestId) return;
+            
+            const retentionType = selectedRetention.value;
+            
+            try {
+                const response = await fetch(`/api/requests/${currentRequestId}/retention`, {
+                    method: 'PUT',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({
+                        retention_type: retentionType
+                    })
+                });
+                
+                if (!response.ok) throw new Error('Failed to update retention');
+                
+                showToast('Success', `Retention updated to ${retentionType.replace('_', ' ')}`, 'available');
+                closeManageRequestModal();
+            } catch (error) {
+                console.error('Error updating retention:', error);
+                showToast('Error', 'Failed to update retention', 'failed');
+            }
         }
 
         // Submit request
@@ -693,9 +831,14 @@
                         // Hide progress bar
                         if (progressContainer) progressContainer.style.display = 'none';
                         
-                        // Update button
+                        // Update button to Manage Request
                         const requestBtn = document.querySelector('.request-btn');
-                        requestBtn.textContent = '✓ In Library';
+                        requestBtn.textContent = 'Manage Request';
+                        requestBtn.classList.remove('disabled');
+                        requestBtn.onclick = openManageRequestModal;
+                        
+                        // Update mediaData
+                        mediaData.in_library = true;
                         
                         // Auto-close toast
                         setTimeout(() => removeToast(toastId), 5000);

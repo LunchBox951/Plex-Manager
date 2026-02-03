@@ -5,7 +5,7 @@ Handles media requests with retention policies, scheduled deletions, and setting
 
 from typing import Optional, List
 from datetime import datetime
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, Request
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
@@ -22,6 +22,7 @@ from src.retention import (
     cancel_scheduled_deletion,
     get_grace_period_days
 )
+from src.audit import log_action
 
 
 router = APIRouter(prefix="/api", tags=["retention"])
@@ -45,6 +46,13 @@ class MediaRequestCreate(BaseModel):
 
 class MediaRequestUpdate(BaseModel):
     retention_type: str = Field(..., pattern="^(forever|watch_once|watch_as_released)$")
+
+
+class ManageRequestCreate(BaseModel):
+    """Simplified request model for managing already-available media."""
+    tmdb_id: int = Field(..., gt=0)
+    media_type: str = Field(..., pattern="^(movie|tv)$")
+    retention_type: str = Field(default="watch_once", pattern="^(forever|watch_once|watch_as_released)$")
 
 
 class RetentionSettingsUpdate(BaseModel):
@@ -168,6 +176,36 @@ async def list_media_requests(
     return requests
 
 
+@router.get("/requests/by-media")
+async def get_request_by_media(
+    tmdb_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """Get user's request for specific media by TMDB ID."""
+    media_request = db.query(MediaRequest).filter(
+        MediaRequest.tmdb_id == tmdb_id,
+        MediaRequest.user_id == current_user.id,
+        MediaRequest.status != 'deleted'
+    ).first()
+    
+    if not media_request:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Request not found")
+    
+    # Get episode overrides if TV show
+    episode_overrides = []
+    if media_request.media_type == 'tv':
+        overrides = db.query(EpisodeRetention).filter(
+            EpisodeRetention.media_request_id == media_request.id
+        ).all()
+        episode_overrides = [override.to_dict() for override in overrides]
+    
+    return {
+        **media_request.to_dict(),
+        "episode_overrides": episode_overrides
+    }
+
+
 @router.get("/requests/{request_id}", response_model=dict)
 async def get_media_request(
     request_id: int,
@@ -204,14 +242,85 @@ async def get_media_request(
     }
 
 
+
+
+@router.post("/manage")
+async def create_available_request(
+    request_data: ManageRequestCreate,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Create a request for media that's already available in Plex.
+    Sets status to 'available' and bypasses download workflow.
+    """
+    from src.plex import check_media_exists
+    from src.TMDB import get_movie_details, get_tv_details
+    
+    # Validate watch_as_released only for TV shows
+    if request_data.retention_type == 'watch_as_released' and request_data.media_type != 'tv':
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="watch_as_released retention type is only valid for TV shows"
+        )
+    
+    # Get media details from TMDB
+    if request_data.media_type == 'movie':
+        details = get_movie_details(request_data.tmdb_id)
+    else:
+        details = get_tv_details(request_data.tmdb_id)
+    
+    title = details.get('title') or details.get('name', 'Unknown')
+    year = details.get('year')
+    
+    # Verify media exists in Plex
+    plex_check = check_media_exists(title, year, request_data.media_type)
+    if not plex_check.get('exists'):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Media not found in Plex library"
+        )
+    
+    # Check for existing request
+    existing = db.query(MediaRequest).filter(
+        MediaRequest.tmdb_id == request_data.tmdb_id,
+        MediaRequest.user_id == current_user.id,
+        MediaRequest.status != 'deleted'
+    ).first()
+    
+    if existing:
+        return existing.to_dict()
+    
+    # Create new request with status='available'
+    media_request = MediaRequest(
+        user_id=current_user.id,
+        tmdb_id=request_data.tmdb_id,
+        media_type=request_data.media_type,
+        title=title,
+        year=year,
+        retention_type=request_data.retention_type,
+        status='available',
+        completed_at=datetime.utcnow()
+    )
+    
+    db.add(media_request)
+    db.commit()
+    db.refresh(media_request)
+    
+    print(f"Created available request for {title} (User: {current_user.username})")
+    
+    return media_request.to_dict()
+
+
 @router.put("/requests/{request_id}/retention", response_model=MediaRequestResponse)
 async def update_retention_type(
     request_id: int,
     update_data: MediaRequestUpdate,
+    request: Request,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    """Update retention type for a request."""
+    """Update retention type for a request with audit logging."""
     media_request = db.query(MediaRequest).filter(
         MediaRequest.id == request_id,
         MediaRequest.user_id == current_user.id
@@ -227,17 +336,30 @@ async def update_retention_type(
             detail="watch_as_released retention type is only valid for TV shows"
         )
     
-    # Update retention type
+    # Capture old state for audit log
     old_retention = media_request.retention_type
+    
+    # Update retention type
     media_request.retention_type = update_data.retention_type
     
     # Recalculate deletion schedule
     recalculate_deletion_schedule(db, media_request)
     
-    # If changing to forever and media was deleted, could trigger re-download
-    # (Implementation depends on download workflow integration)
-    
     db.commit()
+    
+    # Log the change
+    log_action(
+        db=db,
+        user_id=current_user.id,
+        action_type='retention_change',
+        entity_type='media_request',
+        entity_id=request_id,
+        old_value={'retention_type': old_retention},
+        new_value={'retention_type': update_data.retention_type},
+        description=f"Changed retention for '{media_request.title}' from {old_retention} to {update_data.retention_type}",
+        request=request
+    )
+    
     db.refresh(media_request)
     
     print(f"Retention updated for {media_request.title}: {old_retention} -> {update_data.retention_type}")
