@@ -17,6 +17,7 @@ from plexapi.myplex import MyPlexAccount
 from src.database import get_db
 from src.models import User, Permission
 from src.encryption import get_encryption
+from src.plex import is_plex_server_owner
 
 # Router for auth endpoints
 router = APIRouter()
@@ -243,13 +244,25 @@ async def poll_pin(pin_id: str, db: Session = Depends(get_db)):
             print(f"Updating existing user: {user.username}")
             user.last_login = datetime.utcnow()
             user.encrypted_plex_token = encrypted_token
+            
+            # Check if user is server owner and update permissions
+            is_owner = is_plex_server_owner(auth_token)
+            if is_owner:
+                if not user.has_permission(Permission.ADMIN):
+                    print(f"Server owner detected - granting admin privileges to {user.username}")
+                    user.permissions = Permission.ADMIN
+            else:
+                # Ensure non-owners only have request permissions
+                if user.has_permission(Permission.ADMIN):
+                    print(f"User {user.username} is no longer server owner - removing admin privileges")
+                user.permissions = Permission.CAN_REQUEST
         else:
             # Create new user
             print(f"Creating new user: {account.username}")
             
-            # First user becomes admin
-            is_first_user = db.query(User).count() == 0
-            permissions = Permission.ADMIN if is_first_user else Permission.CAN_REQUEST
+            # Check if user is the server owner
+            is_owner = is_plex_server_owner(auth_token)
+            permissions = Permission.ADMIN if is_owner else Permission.CAN_REQUEST
             
             user = User(
                 plex_id=str(account.id),
@@ -261,8 +274,10 @@ async def poll_pin(pin_id: str, db: Session = Depends(get_db)):
             )
             db.add(user)
             
-            if is_first_user:
-                print("First user - granted admin privileges")
+            if is_owner:
+                print(f"✓ Server owner detected - granted admin privileges to {account.username}")
+            else:
+                print(f"✗ Not server owner - granted request-only permissions to {account.username}")
         
         db.commit()
         db.refresh(user)

@@ -1,5 +1,6 @@
 from plexapi.server import PlexServer
 from plexapi.video import Movie, Show
+from plexapi.myplex import MyPlexAccount
 import os
 import sys
 import time
@@ -31,6 +32,59 @@ except Exception as e:
 def get_plex_server():
     """Returns the connected Plex server instance."""
     return plex
+
+
+def is_plex_server_owner(user_plex_token: str) -> bool:
+    """
+    Check if the user with the given Plex token owns the configured Plex server.
+    
+    Args:
+        user_plex_token: The user's Plex authentication token
+        
+    Returns:
+        True if the user owns the configured Plex server, False otherwise
+        
+    Note:
+        Returns False if there are any errors (network issues, invalid token, etc.)
+        to prevent blocking authentication flow.
+    """
+    try:
+        # Create MyPlexAccount instance for the user
+        logger.debug(f"Checking server ownership for user token")
+        account = MyPlexAccount(token=user_plex_token)
+        
+        # Get the configured server's machine identifier
+        server_machine_id = plex.machineIdentifier
+        logger.debug(f"Configured server machine ID: {server_machine_id}")
+        
+        # Query all resources (servers) the user has access to
+        resources = account.resources()
+        logger.debug(f"User has access to {len(resources)} resources")
+        
+        # Check each resource for ownership
+        for resource in resources:
+            # Only check Plex Media Server resources
+            if resource.product == 'Plex Media Server':
+                logger.debug(f"Checking server: {resource.name} (ID: {resource.clientIdentifier}, Owned: {resource.owned})")
+                
+                # Check if this is our configured server and if user owns it
+                if resource.clientIdentifier == server_machine_id:
+                    if resource.owned:
+                        logger.info(f"✓ User {account.username} owns the configured Plex server")
+                        return True
+                    else:
+                        logger.info(f"✗ User {account.username} has access but does not own the configured Plex server")
+                        return False
+        
+        # Server not found in user's resources
+        logger.warning(f"Configured server (ID: {server_machine_id}) not found in user's accessible resources")
+        return False
+        
+    except Exception as e:
+        # Log error but don't block authentication
+        logger.error(f"Error checking server ownership: {e}")
+        logger.error(f"Defaulting to non-admin permissions")
+        return False
 
 def safe_api_call(api_function, *args, max_retries=3, retry_delay=2, **kwargs):
     """
