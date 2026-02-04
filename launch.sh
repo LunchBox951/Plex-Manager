@@ -7,11 +7,10 @@ set -e
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 cd "$SCRIPT_DIR"
 
-# Ensure .env exists
+# Check if .env exists (info only - setup wizard will handle if missing)
 if [ ! -f .env ]; then
-    echo "ERROR: .env file not found!"
-    echo "Copy .env.example, fill out variables, then try again."
-    exit 1
+    echo "No .env file found - setup wizard will launch automatically."
+    echo ""
 fi
 
 # Check if Python 3 is installed

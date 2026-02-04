@@ -57,7 +57,12 @@ def validate_environment():
     if missing:
         raise ValueError(f"Missing required environment variables: {', '.join(missing)}")
     
-    # Verify paths exist
+    # Create application directories if they don't exist
+    app_dirs = ['data', 'cache', 'cache/images', 'cache/images/w185', 'cache/images/w500']
+    for dir_path in app_dirs:
+        os.makedirs(dir_path, exist_ok=True)
+    
+    # Verify user-configured paths exist
     paths_to_check = {
         'DOWNLOADS_PATH': os.getenv('DOWNLOADS_PATH'),
         'MOVIES_PATH': os.getenv('MOVIES_PATH'),

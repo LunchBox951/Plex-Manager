@@ -4,7 +4,11 @@
 
 Plex Manager is a unified media request and automation system that integrates with Plex, TMDB, Prowlarr, and qBittorrent to provide a Netflix-style interface for requesting and managing media.
 
-## Prerequisites
+## Quick Start (Recommended)
+
+**New in 2026:** Plex Manager now includes an **automated setup wizard** that guides you through the entire configuration process!
+
+### Prerequisites
 
 - **Python 3.8+**
 - **Plex Media Server** (for OAuth authentication and media library)
@@ -12,280 +16,95 @@ Plex Manager is a unified media request and automation system that integrates wi
 - **Prowlarr** (for torrent indexer aggregation)
 - **qBittorrent** (with Web UI enabled)
 
----
+### One-Command Setup
 
-## Part 1: Initial Setup
-
-### Step 1: Install Python Dependencies
-
-```bash
-# Activate your virtual environment
-# On Windows PowerShell:
-.\.venv\Scripts\Activate.ps1
-
-# On Linux/Mac:
-source .venv/bin/activate
-
-# Install dependencies
-pip install -r requirements.txt
-```
-
-### Step 2: Generate Security Keys
-
-Run these commands to generate required security keys:
-
-```bash
-# Generate SECRET_KEY (for session management)
-python -c "import secrets; print(f'SECRET_KEY={secrets.token_urlsafe(32)}')"
-
-# Generate JWT_SECRET_KEY (for JWT tokens)
-python -c "import secrets; print(f'JWT_SECRET_KEY={secrets.token_urlsafe(32)}')"
-
-# Generate PLEX_CLIENT_ID (for OAuth)
-python -c "import uuid; print(f'PLEX_CLIENT_ID={uuid.uuid4()}')"
-
-# Generate ENCRYPTION_KEY (for token encryption)
-python -c "from cryptography.fernet import Fernet; print(f'ENCRYPTION_KEY={Fernet.generate_key().decode()}')"
-```
-
-### Step 3: Create .env File
-
-1. Copy `.env.example` to `.env`:
+1. **Install Python Dependencies:**
    ```bash
-   # Windows PowerShell
-   Copy-Item .env.example .env
+   # Activate your virtual environment (if using one)
+   # Windows PowerShell:
+   .\.venv\Scripts\Activate.ps1
    
-   # Linux/Mac
-   cp .env.example .env
+   # Linux/Mac:
+   source .venv/bin/activate
+   
+   # Install dependencies
+   pip install -r requirements.txt
    ```
 
-2. Open `.env` and fill in all required values (see Part 2-4 for service-specific setup)
+2. **Run Plex Manager:**
+   ```bash
+   python main.py
+   ```
+
+3. **Follow the Setup Wizard:**
+   - The wizard automatically launches on first run
+   - It will auto-generate security keys (no manual commands needed!)
+   - Prompts you for configuration with smart defaults
+   - Tests each service connection before continuing
+   - Validates all paths and creates necessary directories
+   
+4. **Done!** Your browser will open to http://localhost:8000
+
+### What You'll Need
+
+Before starting the wizard, have these ready:
+
+1. **Plex Server Information:**
+   - Server URL (usually `http://localhost:32400`)
+   - Authentication token ([how to find it](https://support.plex.tv/articles/204059436-finding-an-authentication-token-x-plex-token/))
+
+2. **TMDB API Key:**
+   - Get a free key at https://www.themoviedb.org/settings/api
+
+3. **Prowlarr Details:**
+   - URL (usually `http://localhost:9696`)
+   - API key from Settings → General → Security
+
+4. **qBittorrent Credentials:**
+   - Web UI URL (usually `http://localhost:8080`)
+   - Username and password
+
+5. **Directory Paths** (must exist before setup):
+   - Downloads folder (where qBittorrent saves files)
+   - Movies library folder (where Plex reads movies)
+   - TV shows library folder (where Plex reads TV shows)
+
+> **Note:** The wizard will test connections and validate paths before saving your configuration!
 
 ---
 
-## Part 2: External Service Setup
+## Re-running the Setup Wizard
 
-### A. Plex Media Server
+If you need to reconfigure Plex Manager:
 
-#### Get Your Plex Server URL
-
-Your Plex server URL is typically:
-- **Local network**: `http://192.168.x.x:32400`
-- **Localhost**: `http://localhost:32400`
-
-To find it:
-1. Open Plex Web App (app.plex.tv)
-2. Go to Settings → Network
-3. Note the server address and port (default: 32400)
-
-#### Get Your Plex Token
-
-**Method 1: Through Plex Web App**
-1. Sign in to app.plex.tv
-2. Open any media item
-3. Click "..." → "Get Info" → "View XML"
-4. Find `X-Plex-Token=XXXXX` in the URL
-5. Copy the token value
-
-**Method 2: Through PlexPass (easier)**
-1. Go to https://support.plex.tv/articles/204059436-finding-an-authentication-token-x-plex-token/
-2. Follow the instructions for your platform
-
-#### Update .env
-```env
-PLEX_URL=http://192.168.1.100:32400
-PLEX_TOKEN=your-plex-token-here
-```
-
----
-
-### B. TMDB API
-
-1. Create a free account at https://www.themoviedb.org/signup
-2. Go to https://www.themoviedb.org/settings/api
-3. Request an API key (fill out the form with your app info)
-4. Copy the **API Key (v3 auth)**
-
-#### Update .env
-```env
-TMDB_API_KEY=your-tmdb-api-key-here
-```
-
----
-
-### C. Prowlarr Setup
-
-Prowlarr aggregates multiple torrent indexers into a single API.
-
-#### Installation
-
-**Windows:**
-1. Download from https://prowlarr.com/#downloads
-2. Run the installer
-3. Prowlarr starts on http://localhost:9696
-
-**Linux (Docker):**
 ```bash
-docker run -d \
-  --name=prowlarr \
-  -p 9696:9696 \
-  -v /path/to/config:/config \
-  --restart unless-stopped \
-  lscr.io/linuxserver/prowlarr:latest
+python main.py --setup
 ```
 
-#### Configuration
-
-1. Open Prowlarr at http://localhost:9696
-2. **Add Indexers:**
-   - Go to Indexers → Add Indexer
-   - Add your preferred indexers (1337x, RARBG, The Pirate Bay, etc.)
-   - Configure each indexer with required credentials/cookies
-3. **Get API Key:**
-   - Go to Settings → General → Security
-   - Copy the API Key
-
-#### Update .env
-```env
-PROWLARR_URL=http://localhost:9696
-PROWLARR_API_KEY=your-prowlarr-api-key-here
-```
+This will review your existing configuration and allow you to update any values.
 
 ---
 
-### D. qBittorrent Setup
+## Service Installation (For Reference)
 
-qBittorrent is the download client for torrents.
+Before running the setup wizard, you'll need these services installed and running. See the [Manual Setup Guide](#manual-setup-guide) below for detailed installation instructions for:
 
-#### Installation
-
-**Windows:**
-1. Download from https://www.qbittorrent.org/download.php
-2. Run the installer
-3. Launch qBittorrent
-
-**Linux (Docker):**
-```bash
-docker run -d \
-  --name=qbittorrent \
-  -p 8080:8080 \
-  -v /path/to/config:/config \
-  -v /path/to/downloads:/downloads \
-  --restart unless-stopped \
-  lscr.io/linuxserver/qbittorrent:latest
-```
-
-#### Enable Web UI
-
-1. Open qBittorrent application
-2. Go to Tools → Options → Web UI
-3. **Enable the Web User Interface**
-4. Set Port: `8080` (default)
-5. Set Username: `admin` (or custom)
-6. Set Password: (choose a strong password)
-7. Click "Save"
-
-#### Test Web UI
-- Open http://localhost:8080
-- Login with your username/password
-- You should see the qBittorrent Web UI
-
-#### Update .env
-```env
-QBITTORRENT_URL=http://localhost:8080
-QBITTORRENT_USERNAME=admin
-QBITTORRENT_PASSWORD=your-password-here
-```
-
+- **Plex Media Server** - https://www.plex.tv/media-server-downloads/
+- **Prowlarr** - https://prowlarr.com/#downloads  
+- **qBittorrent** - https://www.qbittorrent.org/download.php
 ---
 
-## Part 3: Directory Structure
+## First-Run Experience
 
-Plex Manager needs paths for downloads and media libraries.
-
-### Create Required Directories
-
-**Windows PowerShell:**
-```powershell
-# Create directories
-New-Item -ItemType Directory -Force -Path "C:\downloads"
-New-Item -ItemType Directory -Force -Path "C:\plex\movies"
-New-Item -ItemType Directory -Force -Path "C:\plex\tv"
-```
-
-**Linux/Mac:**
-```bash
-mkdir -p /downloads
-mkdir -p /plex/movies
-mkdir -p /plex/tv
-```
-
-### Update .env
-```env
-DOWNLOADS_PATH=C:\downloads          # Windows
-# DOWNLOADS_PATH=/downloads          # Linux/Mac
-
-MOVIES_PATH=C:\plex\movies           # Windows
-# MOVIES_PATH=/plex/movies           # Linux/Mac
-
-TV_PATH=C:\plex\tv                   # Windows
-# TV_PATH=/plex/tv                   # Linux/Mac
-```
-
-**Note:** These paths should match your Plex library paths or be accessible to Plex for scanning.
-
----
-
-## Part 4: Complete .env Configuration
-
-Your final `.env` file should contain all these variables:
-
-```env
-# Security Keys (generated in Step 2)
-SECRET_KEY=your-generated-secret-key
-JWT_SECRET_KEY=your-generated-jwt-secret-key
-PLEX_CLIENT_ID=your-generated-uuid
-ENCRYPTION_KEY=your-generated-fernet-key
-
-# Database
-DATABASE_URL=sqlite:///./data/plex_manager.db
-
-# Plex Configuration
-PLEX_URL=http://192.168.1.100:32400
-PLEX_TOKEN=your-plex-token
-
-# TMDB API
-TMDB_API_KEY=your-tmdb-api-key
-
-# Prowlarr
-PROWLARR_URL=http://localhost:9696
-PROWLARR_API_KEY=your-prowlarr-api-key
-
-# qBittorrent
-QBITTORRENT_URL=http://localhost:8080
-QBITTORRENT_USERNAME=admin
-QBITTORRENT_PASSWORD=your-qbittorrent-password
-
-# File Paths
-DOWNLOADS_PATH=C:\downloads
-MOVIES_PATH=C:\plex\movies
-TV_PATH=C:\plex\tv
-
-# Environment
-ENV=development
-```
-
----
-
-## Part 5: Launch the Application
-
-### Start the Application
+### Launch the Application
 
 ```bash
 python main.py
 ```
 
 The application will:
+- Check for `.env` configuration
+- Launch setup wizard if needed (or if `--setup` flag is provided)
 - Initialize the SQLite database (auto-creates tables)
 - Start the FastAPI web server on http://localhost:8000
 - Display startup logs
@@ -301,11 +120,7 @@ INFO:     Application startup complete.
 INFO:     Uvicorn running on http://0.0.0.0:8000
 ```
 
----
-
-## Part 6: First Login & Admin Setup
-
-### Access the Application
+### First Login & Admin Setup
 
 1. Open your browser to http://localhost:8000
 2. You'll see the landing page with "Sign in with Plex"
@@ -555,6 +370,419 @@ For production use:
 
 ---
 
+## Troubleshooting Setup Wizard
+
+### Wizard Won't Start
+
+**Problem:** Setup wizard doesn't launch automatically
+
+**Solutions:**
+- Ensure you've installed all dependencies: `pip install -r requirements.txt`
+- Try forcing the wizard: `python main.py --setup`
+- Check Python version: `python --version` (needs 3.8+)
+
+### Plex Connection Failed
+
+**Problem:** "Failed to connect to Plex server"
+
+**Solutions:**
+1. **Verify Plex is running:**
+   - Open http://localhost:32400/web in your browser
+   - Should see Plex Web App
+
+2. **Check URL format:**
+   - Must include `http://` prefix
+   - Default port is 32400
+   - Example: `http://localhost:32400` or `http://192.168.1.100:32400`
+
+3. **Verify token:**
+   - Follow instructions at https://support.plex.tv/articles/204059436/
+   - Token is case-sensitive
+   - Don't use `plex.tv/claim` token (different from server token!)
+
+4. **Test manually:**
+   ```bash
+   # Windows PowerShell
+   Invoke-WebRequest -Uri "http://localhost:32400/?X-Plex-Token=YOUR_TOKEN"
+   
+   # Linux/Mac
+   curl "http://localhost:32400/?X-Plex-Token=YOUR_TOKEN"
+   ```
+
+### TMDB API Key Invalid
+
+**Problem:** "Invalid TMDB API key"
+
+**Solutions:**
+1. **Get the correct key:**
+   - Sign in to https://www.themoviedb.org/
+   - Go to Settings → API
+   - Use **API Key (v3 auth)** NOT the API Read Access Token
+
+2. **Verify key format:**
+   - Should be 32 alphanumeric characters
+   - No spaces or special characters
+
+3. **Test manually:**
+   ```bash
+   # Windows PowerShell
+   Invoke-WebRequest -Uri "https://api.themoviedb.org/3/configuration?api_key=YOUR_KEY"
+   ```
+
+### Prowlarr Connection Failed
+
+**Problem:** "Cannot connect to Prowlarr"
+
+**Solutions:**
+1. **Verify Prowlarr is running:**
+   - Open http://localhost:9696 in browser
+   - Should see Prowlarr UI
+
+2. **Check API key:**
+   - In Prowlarr: Settings → General → Security → API Key
+   - Copy exactly (case-sensitive)
+
+3. **Network issues:**
+   - If using Docker, ensure port 9696 is exposed
+   - Check firewall settings
+
+### qBittorrent Authentication Failed
+
+**Problem:** "Invalid qBittorrent username or password"
+
+**Solutions:**
+1. **Verify Web UI is enabled:**
+   - qBittorrent → Tools → Options → Web UI
+   - Enable "Web User Interface (Remote control)"
+
+2. **Check credentials:**
+   - Default username is usually `admin`
+   - Password is what you set in Web UI settings
+
+3. **Bypass authentication (local testing only):**
+   - In qBittorrent Web UI settings
+   - Check "Bypass authentication for clients on localhost"
+
+4. **Test manually:**
+   - Open http://localhost:8080 in browser
+   - Try logging in with your credentials
+
+### Path Validation Failed
+
+**Problem:** "Path does not exist" or "Path is not writable"
+
+**Solutions:**
+1. **Create directories first:**
+   - Downloads path: Must exist and be configured in qBittorrent
+   - Movies/TV paths: Must exist and be configured in Plex
+
+2. **Check permissions:**
+   ```bash
+   # Windows - ensure you have write access
+   # Right-click folder → Properties → Security
+   
+   # Linux/Mac
+   chmod 755 /path/to/directory
+   ```
+
+3. **Verify paths:**
+   - Use absolute paths (e.g., `C:\Users\...\Downloads`, not relative)
+   - Ensure drive letters are correct (Windows)
+   - Ensure mount points exist (Linux/Docker)
+
+4. **qBittorrent Downloads Path:**
+   - Must match qBittorrent's "Save files to location"
+   - Check: qBittorrent → Options → Downloads
+
+5. **Plex Library Paths:**
+   - Must match Plex library folder settings
+   - Check: Plex → Settings → Libraries → Edit → Folders
+
+### Rate Limit / Timeout Errors
+
+**Problem:** "Connection timeout" or "Rate limit exceeded"
+
+**Solutions:**
+1. **Slow network:**
+   - Increase timeout in wizard (requires code edit)
+   - Check internet connection
+
+2. **Service startup time:**
+   - Wait for services to fully start before running wizard
+   - Especially Prowlarr/Plex (can take 30-60 seconds)
+
+3. **Retry:**
+   - Wizard allows 3 attempts per field
+   - Wait a few seconds between retries
+
+### Wizard Crashed / Incomplete Setup
+
+**Problem:** Wizard stopped mid-setup or .env is incomplete
+
+**Solutions:**
+1. **Restart wizard:**
+   ```bash
+   python main.py --setup
+   ```
+   - Wizard will detect existing values
+   - You can review and update them
+
+2. **Manual .env edit:**
+   - See [Manual Setup Guide](#manual-setup-guide) below
+   - Edit `.env` file directly
+
+3. **Fresh start:**
+   ```bash
+   # Backup existing .env (optional)
+   mv .env .env.backup
+   
+   # Run wizard fresh
+   python main.py
+   ```
+
+---
+
+## Manual Setup Guide
+
+If you prefer manual configuration or the wizard doesn't work for your setup:
+
+### Step 1: Generate Security Keys
+
+```bash
+# Generate SECRET_KEY
+python -c "import secrets; print(f'SECRET_KEY={secrets.token_urlsafe(32)}')"
+
+# Generate JWT_SECRET_KEY
+python -c "import secrets; print(f'JWT_SECRET_KEY={secrets.token_urlsafe(32)}')"
+
+# Generate PLEX_CLIENT_ID
+python -c "import uuid; print(f'PLEX_CLIENT_ID={uuid.uuid4()}')"
+
+# Generate ENCRYPTION_KEY
+python -c "from cryptography.fernet import Fernet; print(f'ENCRYPTION_KEY={Fernet.generate_key().decode()}')"
+```
+
+### Step 2: Create .env File
+
+Copy `.env.example` to `.env`:
+```bash
+# Windows PowerShell
+Copy-Item .env.example .env
+
+# Linux/Mac
+cp .env.example .env
+```
+
+### Step 3: Configure External Services
+
+#### A. Plex Media Server
+
+**Get Your Plex Server URL:**
+
+Your Plex server URL is typically:
+- **Local network**: `http://192.168.x.x:32400`
+- **Localhost**: `http://localhost:32400`
+
+To find it:
+1. Open Plex Web App (app.plex.tv)
+2. Go to Settings → Network
+3. Note the server address and port (default: 32400)
+
+**Get Your Plex Token:**
+
+**Method 1: Through Plex Web App**
+1. Sign in to app.plex.tv
+2. Open any media item
+3. Click "..." → "Get Info" → "View XML"
+4. Find `X-Plex-Token=XXXXX` in the URL
+5. Copy the token value
+
+**Method 2: Official Documentation**
+1. Go to https://support.plex.tv/articles/204059436-finding-an-authentication-token-x-plex-token/
+2. Follow the instructions for your platform
+
+**Update .env:**
+```env
+PLEX_URL=http://192.168.1.100:32400
+PLEX_TOKEN=your-plex-token-here
+```
+
+---
+
+#### B. TMDB API
+
+1. Create a free account at https://www.themoviedb.org/signup
+2. Go to https://www.themoviedb.org/settings/api
+3. Request an API key (fill out the form with your app info)
+4. Copy the **API Key (v3 auth)**
+
+**Update .env:**
+```env
+TMDB_API_KEY=your-tmdb-api-key-here
+```
+
+---
+
+#### C. Prowlarr Setup
+
+Prowlarr aggregates multiple torrent indexers into a single API.
+
+**Installation:**
+
+**Windows:**
+1. Download from https://prowlarr.com/#downloads
+2. Run the installer
+3. Prowlarr starts on http://localhost:9696
+
+**Linux (Docker):**
+```bash
+docker run -d \
+  --name=prowlarr \
+  -p 9696:9696 \
+  -v /path/to/config:/config \
+  --restart unless-stopped \
+  lscr.io/linuxserver/prowlarr:latest
+```
+
+**Configuration:**
+
+1. Open Prowlarr at http://localhost:9696
+2. **Add Indexers:**
+   - Go to Indexers → Add Indexer
+   - Add your preferred indexers (1337x, RARBG, The Pirate Bay, etc.)
+   - Configure each indexer with required credentials/cookies
+3. **Get API Key:**
+   - Go to Settings → General → Security
+   - Copy the API Key
+
+**Update .env:**
+```env
+PROWLARR_URL=http://localhost:9696
+PROWLARR_API_KEY=your-prowlarr-api-key-here
+```
+
+---
+
+#### D. qBittorrent Setup
+
+qBittorrent is the download client for torrents.
+
+**Installation:**
+
+**Windows:**
+1. Download from https://www.qbittorrent.org/download.php
+2. Run the installer
+3. Launch qBittorrent
+
+**Linux (Docker):**
+```bash
+docker run -d \
+  --name=qbittorrent \
+  -p 8080:8080 \
+  -v /path/to/config:/config \
+  -v /path/to/downloads:/downloads \
+  --restart unless-stopped \
+  lscr.io/linuxserver/qbittorrent:latest
+```
+
+**Enable Web UI:**
+
+1. Open qBittorrent application
+2. Go to Tools → Options → Web UI
+3. **Enable the Web User Interface**
+4. Set Port: `8080` (default)
+5. Set Username: `admin` (or custom)
+6. Set Password: (choose a strong password)
+7. Click "Save"
+
+**Test Web UI:**
+- Open http://localhost:8080
+- Login with your username/password
+- You should see the qBittorrent Web UI
+
+**Update .env:**
+```env
+QBITTORRENT_URL=http://localhost:8080
+QBITTORRENT_USERNAME=admin
+QBITTORRENT_PASSWORD=your-password-here
+```
+
+---
+
+### Step 4: Configure Directory Paths
+
+Plex Manager needs paths for downloads and media libraries.
+
+**Create Required Directories:**
+
+**Windows PowerShell:**
+```powershell
+# Create directories
+New-Item -ItemType Directory -Force -Path "C:\downloads"
+New-Item -ItemType Directory -Force -Path "C:\plex\movies"
+New-Item -ItemType Directory -Force -Path "C:\plex\tv"
+```
+
+**Linux/Mac:**
+```bash
+mkdir -p /downloads
+mkdir -p /plex/movies
+mkdir -p /plex/tv
+```
+
+**Update .env:**
+```env
+DOWNLOADS_PATH=C:\downloads          # Windows
+# DOWNLOADS_PATH=/downloads          # Linux/Mac
+
+MOVIES_PATH=C:\plex\movies           # Windows
+# MOVIES_PATH=/plex/movies           # Linux/Mac
+
+TV_PATH=C:\plex\tv                   # Windows
+# TV_PATH=/plex/tv                   # Linux/Mac
+```
+
+**Note:** These paths should match your Plex library paths or be accessible to Plex for scanning.
+
+---
+
+### Step 5: Complete .env Configuration
+
+Your final `.env` file should contain all these variables:
+
+```env
+# Security Keys (generated in Step 1)
+SECRET_KEY=your-generated-secret-key
+JWT_SECRET_KEY=your-generated-jwt-secret-key
+PLEX_CLIENT_ID=your-generated-uuid
+ENCRYPTION_KEY=your-generated-fernet-key
+
+# Database
+DATABASE_URL=sqlite:///./data/plex_manager.db
+
+# Plex Configuration
+PLEX_URL=http://192.168.1.100:32400
+PLEX_TOKEN=your-plex-token
+
+# TMDB API
+TMDB_API_KEY=your-tmdb-api-key
+
+# Prowlarr
+PROWLARR_URL=http://localhost:9696
+PROWLARR_API_KEY=your-prowlarr-api-key
+
+# qBittorrent
+QBITTORRENT_URL=http://localhost:8080
+QBITTORRENT_USERNAME=admin
+QBITTORRENT_PASSWORD=your-qbittorrent-password
+
+# File Paths
+DOWNLOADS_PATH=C:\downloads
+MOVIES_PATH=C:\plex\movies
+TV_PATH=C:\plex\tv
+
+---
+
 ## Database Management
 
 ### Current: Auto-Initialization
@@ -590,13 +818,16 @@ python main.py
 - Detailed error messages
 - Auto-reload on code changes
 - Verbose logging
-- CORS allows all origins
+- CORS allows localhost origins
 
 **Production Mode** (ENV=production):
 - Generic error messages
 - No auto-reload
 - Production logging
 - Strict CORS policy
+- Secure cookies (requires HTTPS)
+
+**Note:** Setup wizard sets `ENV=development` by default for easier local testing.
 
 ### Customizing Port
 
@@ -633,7 +864,7 @@ To customize, edit scheduling in `src/main_api.py` or `main.py`.
 ### Common Issues
 
 Most issues fall into these categories:
-1. **Environment Variables** - Missing or incorrect `.env` values
+1. **Environment Variables** - Missing or incorrect `.env` values (use wizard to fix!)
 2. **External Services** - Prowlarr/qBittorrent not running or misconfigured
 3. **Network/Firewall** - Ports blocked or services unreachable
 4. **Permissions** - Directory access or file permissions issues
