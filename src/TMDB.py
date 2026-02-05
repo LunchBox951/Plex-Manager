@@ -139,7 +139,13 @@ def safe_tmdb_call(api_function, *args, max_retries: int = 3, retry_delay: int =
     
     # Try to execute the API call
     try:
-        return api_function(*args, **kwargs)
+        result = api_function(*args, **kwargs)
+        # Log result type for debugging
+        if result is not None:
+            logger.debug(f"TMDB API returned: type={type(result)}, len={len(result) if hasattr(result, '__len__') else 'N/A'}")
+            if isinstance(result, list) and result:
+                logger.debug(f"First item type: {type(result[0])}")
+        return result
     except requests.exceptions.Timeout as e:
         print(f"WARNING: TMDB API timeout: {e}")
     except requests.exceptions.HTTPError as e:
@@ -171,7 +177,13 @@ def safe_tmdb_call(api_function, *args, max_retries: int = 3, retry_delay: int =
             _rate_limiter.wait_if_needed()
             
             print("Retrying API call...")
-            return api_function(*args, **kwargs)
+            result = api_function(*args, **kwargs)
+            # Log result type for debugging
+            if result is not None:
+                logger.debug(f"TMDB API retry returned: type={type(result)}, len={len(result) if hasattr(result, '__len__') else 'N/A'}")
+                if isinstance(result, list) and result:
+                    logger.debug(f"First item type: {type(result[0])}")
+            return result
         except Exception as retry_error:
             if attempt < max_retries:
                 print(f"Attempt {attempt} failed: {retry_error}")
@@ -313,19 +325,37 @@ def search_movies(query: str, user_id: int, year: Optional[int] = None) -> List[
     else:
         results = safe_tmdb_call(movie_service.search, query)
     
+    # Validate results (TMDB returns AsObj, not plain list)
+    if results is None:
+        logger.warning(f"TMDB returned None for movie search: {query}")
+        return []
+    
     # Format results
     formatted_results = []
-    for movie in results:
-        formatted_results.append({
-            'id': movie.id,
-            'title': movie.title,
-            'release_date': movie.release_date,
-            'year': movie.release_date[:4] if movie.release_date else None,
-            'overview': movie.overview,
-            'poster_path': movie.poster_path,
-            'backdrop_path': movie.backdrop_path,
-            'vote_average': movie.vote_average,
-        })
+    try:
+        for movie in results:
+            # Skip invalid items (e.g., strings, None)
+            if not hasattr(movie, 'id'):
+                logger.warning(f"Skipping invalid movie result: {type(movie)} - {movie}")
+                continue
+                
+            try:
+                formatted_results.append({
+                    'id': movie.id,
+                    'title': movie.title,
+                    'release_date': movie.release_date,
+                    'year': movie.release_date[:4] if movie.release_date else None,
+                    'overview': movie.overview,
+                    'poster_path': movie.poster_path,
+                    'backdrop_path': movie.backdrop_path,
+                    'vote_average': movie.vote_average,
+                })
+            except AttributeError as e:
+                logger.warning(f"Error formatting movie result: {e}. Movie: {movie}")
+                continue
+    except TypeError as e:
+        logger.warning(f"Error iterating movie results: {e}")
+        return []
     
     # Cache results
     _set_user_search_cache(user_id, cache_key, formatted_results)
@@ -369,19 +399,37 @@ def search_tv(query: str, user_id: int, year: Optional[int] = None) -> List[Dict
     else:
         results = safe_tmdb_call(tv_service.search, query)
     
+    # Validate results (TMDB returns AsObj, not plain list)
+    if results is None:
+        logger.warning(f"TMDB returned None for TV search: {query}")
+        return []
+    
     # Format results
     formatted_results = []
-    for show in results:
-        formatted_results.append({
-            'id': show.id,
-            'name': show.name,
-            'first_air_date': show.first_air_date,
-            'year': show.first_air_date[:4] if show.first_air_date else None,
-            'overview': show.overview,
-            'poster_path': show.poster_path,
-            'backdrop_path': show.backdrop_path,
-            'vote_average': show.vote_average,
-        })
+    try:
+        for show in results:
+            # Skip invalid items (e.g., strings, None)
+            if not hasattr(show, 'id'):
+                logger.warning(f"Skipping invalid TV result: {type(show)} - {show}")
+                continue
+                
+            try:
+                formatted_results.append({
+                    'id': show.id,
+                    'name': show.name,
+                    'first_air_date': show.first_air_date,
+                    'year': show.first_air_date[:4] if show.first_air_date else None,
+                    'overview': show.overview,
+                    'poster_path': show.poster_path,
+                    'backdrop_path': show.backdrop_path,
+                    'vote_average': show.vote_average,
+                })
+            except AttributeError as e:
+                logger.warning(f"Error formatting TV result: {e}. Show: {show}")
+                continue
+    except TypeError as e:
+        logger.warning(f"Error iterating TV results: {e}")
+        return []
     
     # Cache results
     _set_user_search_cache(user_id, cache_key, formatted_results)
