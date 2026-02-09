@@ -130,7 +130,6 @@ Build a unified, self-contained media request and automation system that combine
 ### Priority 2: Post-Processing & Plex Integration
 
 #### Automated File Organization
-- Extract archived downloads (RAR, ZIP)
 - Parse filenames for metadata (title, year, season/episode)
 - Match downloaded files to TMDB entries
 - Rename files according to Plex naming conventions
