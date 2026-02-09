@@ -6,6 +6,7 @@ Handles routing, middleware, and application lifecycle.
 import os
 import logging
 import datetime
+import asyncio
 from contextlib import asynccontextmanager
 from typing import Optional
 from fastapi import FastAPI, Request, Depends, HTTPException, Query
@@ -223,27 +224,15 @@ async def api_trending_movies(
     db: Session = Depends(get_db)
 ):
     """Get trending movies from TMDB with Plex library status and pagination."""
-    from src.TMDB import get_trending, download_image
+    from src.TMDB import get_or_fetch_trending
     from src.plex import check_media_exists
     import logging
     logger = logging.getLogger(__name__)
     
     try:
-        # Get trending data with pagination
-        trending_data = get_trending('movie', time_window, page)
+        # Get trending data with cached images
+        trending_data = await get_or_fetch_trending('movie', time_window, page)
         results = trending_data.get('results', [])
-        
-        # Download and cache images for each movie
-        for item in results:
-            if item.get('poster_path'):
-                cached_path = download_image(item['poster_path'], 'w500', 'trending')
-                if cached_path:
-                    item['poster_url'] = f"/cache-images/{cached_path}"
-            
-            if item.get('backdrop_path'):
-                cached_path = download_image(item['backdrop_path'], 'w500', 'trending')
-                if cached_path:
-                    item['backdrop_url'] = f"/cache-images/{cached_path}"
         
         # Check Plex library status for each movie
         try:
@@ -282,27 +271,15 @@ async def api_trending_tv(
     db: Session = Depends(get_db)
 ):
     """Get trending TV shows from TMDB with Plex library status and pagination."""
-    from src.TMDB import get_trending, download_image
+    from src.TMDB import get_or_fetch_trending
     from src.plex import check_media_exists
     import logging
     logger = logging.getLogger(__name__)
     
     try:
-        # Get trending data with pagination
-        trending_data = get_trending('tv', time_window, page)
+        # Get trending data with cached images
+        trending_data = await get_or_fetch_trending('tv', time_window, page)
         results = trending_data.get('results', [])
-        
-        # Download and cache images for each show
-        for item in results:
-            if item.get('poster_path'):
-                cached_path = download_image(item['poster_path'], 'w500', 'trending')
-                if cached_path:
-                    item['poster_url'] = f"/cache-images/{cached_path}"
-            
-            if item.get('backdrop_path'):
-                cached_path = download_image(item['backdrop_path'], 'w500', 'trending')
-                if cached_path:
-                    item['backdrop_url'] = f"/cache-images/{cached_path}"
         
         # Check Plex library status for each show
         try:
@@ -331,12 +308,6 @@ async def api_trending_tv(
     except Exception as e:
         logger.error(f"Failed to fetch trending TV: {e}")
         raise HTTPException(status_code=500, detail=str(e))
-        
-        return {"results": results, "time_window": time_window}
-        
-    except Exception as e:
-        logger.error(f"Failed to fetch trending TV: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/api/search")
@@ -358,7 +329,7 @@ async def api_search(
     
     try:
         # Get cached search results
-        results = get_or_fetch_search(query, current_user.id, page, 'multi')
+        results = await get_or_fetch_search(query, current_user.id, page, 'multi')
         
         # Check Plex library status
         try:
@@ -710,14 +681,16 @@ async def get_season_episodes(
             except Exception as plex_error:
                 logger.warning(f"Error checking Plex availability: {plex_error}")
         
-        # Extract episode information and download still images
+        # Extract episode information and trigger background downloads
         episodes = []
+        from src.TMDB import get_cached_image_path
+        
         for ep in season_details.episodes:
             still_path = ep.still_path if hasattr(ep, 'still_path') else None
             
-            # Download still image to cache before returning
+            # Fire download in background without awaiting
             if still_path:
-                download_image(still_path, size='w185', cache_type='trending')
+                asyncio.create_task(download_image(still_path, size='w185', cache_type='trending'))
             
             episode_number = ep.episode_number if hasattr(ep, 'episode_number') else 0
             

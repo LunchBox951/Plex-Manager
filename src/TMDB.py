@@ -13,12 +13,15 @@ import sys
 import json
 import time
 import logging
+import asyncio
 from collections import deque
 from datetime import datetime, timedelta, date
 from typing import Optional, Dict, List, Any, Tuple
 
 from tmdbv3api import TMDb, Movie, TV, Trending, Season
 import requests
+import httpx
+from filelock import FileLock
 
 logger = logging.getLogger(__name__)
 
@@ -970,9 +973,27 @@ def refresh_ongoing_seasons_cache(db_session) -> int:
 # Homepage Caching System for Trending and Search
 # ============================================================================
 
-def download_image(path: str, size: str = 'w500', cache_type: str = 'trending') -> Optional[str]:
+def get_cached_image_path(path: str, size: str = 'w500') -> str:
     """
-    Download TMDB image to local cache directory.
+    Get the cache path for an image without downloading.
+    
+    Args:
+        path: TMDB image path (e.g., '/abc123.jpg')
+        size: Image size ('w500' for all images)
+        
+    Returns:
+        Cache path relative to cache directory (e.g., 'w500/abc123.jpg')
+    """
+    if not path:
+        return ''
+    
+    filename = path.lstrip('/').replace('/', '_')
+    return f"{size}/{filename}"
+
+
+async def download_image(path: str, size: str = 'w500', cache_type: str = 'trending') -> Optional[str]:
+    """
+    Download TMDB image to local cache directory with async HTTP and retry logic.
     
     Args:
         path: TMDB image path (e.g., '/abc123.jpg')
@@ -980,11 +1001,8 @@ def download_image(path: str, size: str = 'w500', cache_type: str = 'trending') 
         cache_type: 'trending' (7 day TTL) or 'search' (24h TTL)
         
     Returns:
-        Local file path relative to cache directory, or None if download fails
+        Local file path relative to cache directory, or None if download fails after 3 retries
     """
-    import requests
-    import hashlib
-    
     if not path:
         return None
     
@@ -1000,59 +1018,69 @@ def download_image(path: str, size: str = 'w500', cache_type: str = 'trending') 
     if os.path.exists(file_path):
         return f"{size}/{filename}"
     
-    # Download image
+    # Download image with 300-second timeout (single attempt)
+    image_url = f"https://image.tmdb.org/t/p/{size}{path}"
+    
     try:
-        image_url = f"https://image.tmdb.org/t/p/{size}{path}"
-        response = requests.get(image_url, timeout=10)
-        response.raise_for_status()
-        
-        # Save to cache
-        with open(file_path, 'wb') as f:
-            f.write(response.content)
-        
-        # Update metadata
-        metadata_file = os.path.join('cache', 'image_metadata.json')
-        metadata = {}
-        if os.path.exists(metadata_file):
-            with open(metadata_file, 'r') as f:
-                metadata = json.load(f)
-        
-        metadata[filename] = {
-            'cache_type': cache_type,
-            'downloaded_at': datetime.utcnow().isoformat(),
-            'path': path,
-            'size': size
-        }
-        
-        with open(metadata_file, 'w') as f:
-            json.dump(metadata, f, indent=2)
-        
-        logger.info(f"Downloaded TMDB image: {filename}")
-        return f"{size}/{filename}"
-        
+        async with httpx.AsyncClient(timeout=300.0) as client:
+            response = await client.get(image_url)
+            response.raise_for_status()
+            
+            # Save to cache
+            with open(file_path, 'wb') as f:
+                f.write(response.content)
+            
+            # Update metadata with file locking (60 second timeout)
+            metadata_file = os.path.join('cache', 'image_metadata.json')
+            lock_file = metadata_file + '.lock'
+            lock = FileLock(lock_file, timeout=60)
+            
+            try:
+                with lock:
+                    metadata = {}
+                    if os.path.exists(metadata_file):
+                        with open(metadata_file, 'r') as f:
+                            metadata = json.load(f)
+                    
+                    metadata[filename] = {
+                        'cache_type': cache_type,
+                        'downloaded_at': datetime.utcnow().isoformat(),
+                        'path': path,
+                        'size': size
+                    }
+                    
+                    with open(metadata_file, 'w') as f:
+                        json.dump(metadata, f, indent=2)
+            except Exception as lock_error:
+                logger.warning(f"Failed to update metadata for {filename}: {lock_error}")
+            
+            logger.info(f"Downloaded TMDB image: {filename}")
+            return f"{size}/{filename}"
+            
     except Exception as e:
-        logger.error(f"Failed to download image {path}: {e}")
+        logger.error(f"Failed to download image {path} after 300s timeout: {e}")
         return None
 
 
-def get_or_fetch_trending(media_type: str, time_window: str = 'week', force_refresh: bool = False) -> List[Dict[str, Any]]:
+async def get_or_fetch_trending(media_type: str, time_window: str = 'week', page: int = 1, force_refresh: bool = False) -> Dict[str, Any]:
     """
-    Get trending media from cache or fetch from TMDB API.
+    Get trending media from cache or fetch from TMDB API with parallel image downloads.
     
     Args:
         media_type: 'movie' or 'tv'
         time_window: 'day' or 'week'
+        page: Page number for pagination
         force_refresh: Bypass cache and fetch fresh data
         
     Returns:
-        List of trending media with cached image URLs
+        Dict with 'results', 'page', 'total_pages', 'total_results'
     """
     import hashlib
     from src.database import get_db
     from src.models import TMDBCache
     
-    # Generate cache key
-    cache_key = hashlib.md5(f"trending_{media_type}_{time_window}".encode()).hexdigest()
+    # Generate cache key with page number
+    cache_key = hashlib.md5(f"trending_{media_type}_{time_window}_page{page}".encode()).hexdigest()
     
     # Check database cache if not forcing refresh
     if not force_refresh:
@@ -1064,61 +1092,90 @@ def get_or_fetch_trending(media_type: str, time_window: str = 'week', force_refr
             ).first()
             
             if cache_entry:
-                logger.info(f"Cache hit for trending {media_type}")
-                return json.loads(cache_entry.data_json)
+                logger.info(f"Cache hit for trending {media_type} page {page}")
+                cached_data = json.loads(cache_entry.data_json)
+                
+                # Extract results from cached data
+                results = cached_data.get('results', []) if isinstance(cached_data, dict) else cached_data
+                
+                # Verify image files exist and download if missing
+                download_tasks = []
+                for item in results:
+                    if item.get('poster_path'):
+                        download_tasks.append(download_image(item['poster_path'], 'w500', 'trending'))
+                    if item.get('backdrop_path'):
+                        download_tasks.append(download_image(item['backdrop_path'], 'w500', 'trending'))
+                
+                if download_tasks:
+                    await asyncio.gather(*download_tasks, return_exceptions=True)
+                
+                return cached_data
         finally:
             db.close()
     
     # Fetch from TMDB API
-    logger.info(f"Fetching trending {media_type} from TMDB API")
-    trending_data = get_trending(media_type, time_window)
+    logger.info(f"Fetching trending {media_type} from TMDB API page {page}")
+    trending_data = get_trending(media_type, time_window, page)
     
     # Extract results list from the dict
     results = trending_data.get('results', []) if isinstance(trending_data, dict) else trending_data
     
-    # Download images to cache
+    # Collect all download tasks
+    download_tasks = []
     for item in results:
         if item.get('poster_path'):
-            cached_path = download_image(item['poster_path'], 'w500', 'trending')
-            if cached_path:
-                item['poster_url'] = f"/cache-images/{cached_path}"
+            cached_path = get_cached_image_path(item['poster_path'], 'w500')
+            item['poster_url'] = f"/cache-images/{cached_path}"
+            download_tasks.append(download_image(item['poster_path'], 'w500', 'trending'))
         
         if item.get('backdrop_path'):
-            cached_path = download_image(item['backdrop_path'], 'w500', 'trending')
-            if cached_path:
-                item['backdrop_url'] = f"/cache-images/{cached_path}"
+            cached_path = get_cached_image_path(item['backdrop_path'], 'w500')
+            item['backdrop_url'] = f"/cache-images/{cached_path}"
+            download_tasks.append(download_image(item['backdrop_path'], 'w500', 'trending'))
+    
+    # Wait for all downloads to complete before returning
+    if download_tasks:
+        await asyncio.gather(*download_tasks, return_exceptions=True)
     
     # Store in database cache with 7-day TTL
     db = next(get_db())
     try:
         expires_at = datetime.utcnow() + timedelta(days=7)
         
+        # Prepare full response data with pagination
+        response_data = {
+            'results': results,
+            'page': trending_data.get('page', page),
+            'total_pages': trending_data.get('total_pages', 1),
+            'total_results': trending_data.get('total_results', len(results))
+        }
+        
         # Update or create cache entry
         cache_entry = db.query(TMDBCache).filter(TMDBCache.cache_key == cache_key).first()
         if cache_entry:
-            cache_entry.data_json = json.dumps(results)
+            cache_entry.data_json = json.dumps(response_data)
             cache_entry.expires_at = expires_at
             cache_entry.created_at = datetime.utcnow()
         else:
             cache_entry = TMDBCache(
                 cache_key=cache_key,
                 cache_type='trending',
-                data_json=json.dumps(results),
+                data_json=json.dumps(response_data),
                 expires_at=expires_at
             )
             db.add(cache_entry)
         
         db.commit()
-        logger.info(f"Cached trending {media_type} until {expires_at}")
+        logger.info(f"Cached trending {media_type} page {page} until {expires_at}")
     finally:
         db.close()
     
-    return results
+    return response_data
 
 
-def get_or_fetch_search(query: str, user_id: int, page: int = 1, media_type: str = 'multi') -> Dict[str, Any]:
+async def get_or_fetch_search(query: str, user_id: int, page: int = 1, media_type: str = 'multi') -> Dict[str, Any]:
     """
-    Get search results from cache or fetch from TMDB API.
+    Get search results from cache or fetch from TMDB API with parallel image downloads.
     
     Args:
         query: Search query string
@@ -1149,6 +1206,19 @@ def get_or_fetch_search(query: str, user_id: int, page: int = 1, media_type: str
         
         if cache_entry:
             logger.info(f"Cache hit for search: {query} (page {page})")
+            cached_results = json.loads(cache_entry.data_json)
+            
+            # Verify image files exist and download if missing
+            download_tasks = []
+            for media_list in [cached_results.get('movies', {}).get('results', []), cached_results.get('tv', {}).get('results', [])]:
+                for item in media_list:
+                    if item.get('poster_path'):
+                        download_tasks.append(download_image(item['poster_path'], 'w500', 'search'))
+                    if item.get('backdrop_path'):
+                        download_tasks.append(download_image(item['backdrop_path'], 'w500', 'search'))
+            
+            if download_tasks:
+                await asyncio.gather(*download_tasks, return_exceptions=True)
             
             # Record search in user history
             search_cache = SearchCache(
@@ -1159,7 +1229,7 @@ def get_or_fetch_search(query: str, user_id: int, page: int = 1, media_type: str
             db.add(search_cache)
             db.commit()
             
-            return json.loads(cache_entry.data_json)
+            return cached_results
     finally:
         db.close()
     
@@ -1208,18 +1278,23 @@ def get_or_fetch_search(query: str, user_id: int, page: int = 1, media_type: str
             }
         }
     
-    # Download images to cache
+    # Collect all download tasks
+    download_tasks = []
     for media_list in [results['movies']['results'], results['tv']['results']]:
         for item in media_list:
             if item.get('poster_path'):
-                cached_path = download_image(item['poster_path'], 'w500', 'search')
-                if cached_path:
-                    item['poster_url'] = f"/cache-images/{cached_path}"
+                cached_path = get_cached_image_path(item['poster_path'], 'w500')
+                item['poster_url'] = f"/cache-images/{cached_path}"
+                download_tasks.append(download_image(item['poster_path'], 'w500', 'search'))
             
             if item.get('backdrop_path'):
-                cached_path = download_image(item['backdrop_path'], 'w500', 'search')
-                if cached_path:
-                    item['backdrop_url'] = f"/cache-images/{cached_path}"
+                cached_path = get_cached_image_path(item['backdrop_path'], 'w500')
+                item['backdrop_url'] = f"/cache-images/{cached_path}"
+                download_tasks.append(download_image(item['backdrop_path'], 'w500', 'search'))
+    
+    # Wait for all downloads to complete before returning
+    if download_tasks:
+        await asyncio.gather(*download_tasks, return_exceptions=True)
     
     # Store in database cache with 24-hour TTL
     db = next(get_db())
