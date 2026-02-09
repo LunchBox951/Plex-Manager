@@ -677,11 +677,13 @@ def cleanup_old_downloads():
     try:
         cutoff_date = datetime.utcnow() - timedelta(days=90)
         
-        # Delete completed downloads older than 90 days
-        deleted_completed = db.query(Download).filter(
+        # Delete completed downloads whose MediaRequest has been deleted
+        deleted_completed = db.query(Download).join(
+            MediaRequest, Download.media_request_id == MediaRequest.id
+        ).filter(
             Download.status == 'completed',
-            Download.completed_at < cutoff_date
-        ).delete()
+            MediaRequest.status == 'deleted'
+        ).delete(synchronize_session=False)
         
         # Delete failed downloads older than 90 days
         deleted_failed = db.query(Download).filter(
@@ -693,10 +695,72 @@ def cleanup_old_downloads():
         
         total_deleted = deleted_completed + deleted_failed
         if total_deleted > 0:
-            print(f"Cleaned up {total_deleted} old download records")
+            print(f"Cleaned up {total_deleted} old download records ({deleted_completed} completed, {deleted_failed} failed)")
         
     except Exception as e:
         print(f"Error in cleanup_old_downloads: {e}")
+        db.rollback()
+    finally:
+        db.close()
+
+
+def verify_library_status():
+    """
+    Verify that 'available' media still exists in Plex library.
+    Updates status to 'deleted' if media is missing.
+    Called by scheduler daily.
+    """
+    from src.plex import check_media_exists
+    
+    db = SessionLocal()
+    
+    try:
+        # Get all MediaRequests with status 'available'
+        available_requests = db.query(MediaRequest).filter(
+            MediaRequest.status == 'available'
+        ).all()
+        
+        if not available_requests:
+            print("No available media to verify")
+            return
+        
+        print(f"Verifying library status for {len(available_requests)} media items...")
+        
+        verified_count = 0
+        removed_count = 0
+        error_count = 0
+        
+        for media_request in available_requests:
+            try:
+                # Check if media still exists in Plex
+                exists = check_media_exists(
+                    media_request.title,
+                    media_request.year,
+                    media_request.media_type
+                )
+                
+                if exists.get('exists'):
+                    # Media still in library - update verification timestamp
+                    media_request.library_verified_at = datetime.utcnow()
+                    verified_count += 1
+                else:
+                    # Media removed from library - mark as deleted
+                    media_request.status = 'deleted'
+                    media_request.deleted_at = datetime.utcnow()
+                    media_request.library_removed_at = datetime.utcnow()
+                    removed_count += 1
+                    print(f"  Media removed from library: {media_request.title} ({media_request.year})")
+                
+            except Exception as e:
+                error_count += 1
+                print(f"  Error verifying {media_request.title}: {e}")
+                continue
+        
+        db.commit()
+        print(f"Library verification complete: {verified_count} verified, {removed_count} marked deleted, {error_count} errors")
+        
+    except Exception as e:
+        print(f"Error in verify_library_status: {e}")
         db.rollback()
     finally:
         db.close()
@@ -1364,6 +1428,16 @@ def start_monitor():
         hour=3,
         minute=0,
         id='cleanup_downloads',
+        replace_existing=True
+    )
+    
+    # Verify library status daily at 1 AM
+    scheduler.add_job(
+        verify_library_status,
+        'cron',
+        hour=1,
+        minute=0,
+        id='verify_library',
         replace_existing=True
     )
     

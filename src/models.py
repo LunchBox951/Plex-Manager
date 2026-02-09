@@ -213,6 +213,10 @@ class MediaRequest(Base):
     completed_at = Column(DateTime, nullable=True)  # When media became available
     deleted_at = Column(DateTime, nullable=True)  # When media was deleted
     
+    # Library verification tracking
+    library_verified_at = Column(DateTime, nullable=True)  # Last verification that media exists in library
+    library_removed_at = Column(DateTime, nullable=True)  # When media was detected as removed from library
+    
     def to_dict(self):
         """Convert media request to dictionary for JSON serialization."""
         return {

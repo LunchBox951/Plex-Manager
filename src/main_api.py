@@ -411,8 +411,11 @@ async def api_request_status(
     if media_request.user_id != current_user.id and not current_user.is_admin():
         raise HTTPException(status_code=403, detail="Access denied")
     
-    # Calculate progress based on downloads
-    downloads = db.query(Download).filter(Download.media_request_id == request_id).all()
+    # Calculate progress based on downloads (only active ones)
+    downloads = db.query(Download).filter(
+        Download.media_request_id == request_id,
+        Download.status.in_(['pending', 'downloading', 'seeding'])
+    ).all()
     
     total_progress = 0
     total_speed = 0
@@ -429,11 +432,10 @@ async def api_request_status(
                 for download in downloads:
                     if download.status == 'downloading' and download.torrent_hash:
                         try:
-                            torrent_info = qb.torrents_info(torrent_hashes=download.torrent_hash)
-                            if torrent_info and len(torrent_info) > 0:
-                                torrent = torrent_info[0]
-                                total_speed += torrent.get('dlspeed', 0)
-                                eta = torrent.get('eta', 0)
+                            torrent_info = qb.get_torrent_info(download.torrent_hash)
+                            if torrent_info:
+                                total_speed += torrent_info.get('dlspeed', 0)
+                                eta = torrent_info.get('eta', 0)
                                 if eta > 0 and eta < 8640000:  # Ignore if > 100 days
                                     total_eta += eta
                                     active_downloads += 1
