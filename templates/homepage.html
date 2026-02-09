@@ -184,12 +184,61 @@
         </div>
     </div>
 
+    <!-- Manage Request Modal (for available media) -->
+    <div class="modal-backdrop" id="manageRequestModal">
+        <div class="modal-content manage-request-content">
+            <button class="modal-close" onclick="closeManageRequestModal()">×</button>
+            <div class="modal-header">
+                <h2 id="manageModalTitle">Manage Retention</h2>
+                <p>Update retention settings for this content</p>
+            </div>
+            
+            <div class="retention-options">
+                <label class="retention-option">
+                    <input type="radio" name="manage-retention" value="forever">
+                    <div class="retention-option-content">
+                        <div class="retention-option-title">Keep Forever</div>
+                        <div class="retention-option-description">
+                            This content will never be automatically deleted.
+                        </div>
+                    </div>
+                </label>
+                
+                <label class="retention-option">
+                    <input type="radio" name="manage-retention" value="watch_once">
+                    <div class="retention-option-content">
+                        <div class="retention-option-title">Watch Once</div>
+                        <div class="retention-option-description">
+                            Automatically delete 30 days after you've watched it.
+                        </div>
+                    </div>
+                </label>
+                
+                <label class="retention-option" id="manageWatchAsReleasedOption">
+                    <input type="radio" name="manage-retention" value="watch_as_released">
+                    <div class="retention-option-content">
+                        <div class="retention-option-title">Watch As Released</div>
+                        <div class="retention-option-description">
+                            Delete 7 days after watching (once next episode airs).
+                        </div>
+                    </div>
+                </label>
+            </div>
+            
+            <div class="modal-actions">
+                <button class="btn btn-secondary" onclick="closeManageRequestModal()">Cancel</button>
+                <button class="btn btn-primary" id="updateRetentionBtn" onclick="updateRetention()">Update Retention</button>
+            </div>
+        </div>
+    </div>
+
     <!-- Toast Container -->
     <div class="toast-container" id="toastContainer"></div>
 
     <script>
         // Global state
         let currentMediaRequest = null;
+        let currentRequestId = null;
         let activePolls = new Map();
         let searchPage = {movies: 1, tv: 1};
         let searchHasMore = {movies: true, tv: true};
@@ -614,7 +663,7 @@
             
             switch (status.state) {
                 case 'unrequested':
-                    html = `<button class="quick-request-btn" onclick="event.stopPropagation(); openQuickRequest(${card.dataset.tmdbId}, '${card.dataset.mediaType}', '${status.title.replace(/'/g, "\\'")}')">Request</button>`;
+                    html = `<button class="quick-request-btn" onclick="event.stopPropagation(); openQuickRequest(${card.dataset.tmdbId}, '${card.dataset.mediaType}', '${status.title.replace(/'/g, "\\'")}')" >Request</button>`;
                     removeCardProgressBar(card);
                     break;
                 case 'pending':
@@ -630,7 +679,7 @@
                     renderCardProgressBar(card, 100, 'Finalizing');
                     break;
                 case 'available':
-                    html = '<div class="status-indicator available">✓ Available</div>';
+                    html = `<button class="quick-request-btn" onclick="event.stopPropagation(); openManageRequestModal(${card.dataset.tmdbId}, '${card.dataset.mediaType}', '${status.title.replace(/'/g, "\\'")}')" style="background: var(--success-color);">✓ Manage Retention</button>`;
                     removeCardProgressBar(card);
                     break;
                 case 'failed':
@@ -793,8 +842,24 @@
         }
         
         // Open quick request modal
-        function openQuickRequest(tmdbId, mediaType, title) {
+        async function openQuickRequest(tmdbId, mediaType, title) {
             currentMediaRequest = {tmdbId, mediaType, title};
+            
+            // Check if media is already in library
+            try {
+                const response = await fetch(`/api/media/status?tmdb_id=${tmdbId}&media_type=${mediaType}`);
+                if (response.ok) {
+                    const status = await response.json();
+                    if (status.in_library) {
+                        // Media is in library, open manage modal instead
+                        await createAvailableRequest(tmdbId, mediaType, title);
+                        return;
+                    }
+                }
+            } catch (error) {
+                console.error('Error checking library status:', error);
+                // Continue with normal request flow on error
+            }
             
             document.getElementById('modalTitle').textContent = `Request: ${title}`;
             document.getElementById('retentionModal').classList.add('active');
@@ -832,6 +897,138 @@
         function closeRetentionModal() {
             document.getElementById('retentionModal').classList.remove('active');
             currentMediaRequest = null;
+        }
+        
+        // Manage Request Modal Functions
+        async function openManageRequestModal(tmdbId, mediaType, title) {
+            currentMediaRequest = {tmdbId, mediaType, title};
+            const modal = document.getElementById('manageRequestModal');
+            
+            document.getElementById('manageModalTitle').textContent = `Manage: ${title}`;
+            
+            // Show/hide watch_as_released option based on media type
+            const manageWatchAsReleasedOption = document.getElementById('manageWatchAsReleasedOption');
+            if (mediaType === 'movie') {
+                manageWatchAsReleasedOption.style.display = 'none';
+            } else {
+                manageWatchAsReleasedOption.style.display = 'flex';
+            }
+            
+            // Fetch current request data
+            try {
+                const response = await fetch(`/api/requests/by-media?tmdb_id=${tmdbId}`);
+                if (!response.ok) {
+                    // No existing request - shouldn't happen but handle gracefully
+                    console.warn('No existing request found for media in library');
+                    showToast('Error', 'Failed to load request data', 'failed');
+                    return;
+                }
+                
+                const request = await response.json();
+                currentRequestId = request.id;
+                
+                // Pre-select current retention type
+                const retentionInput = document.querySelector(`input[name="manage-retention"][value="${request.retention_type}"]`);
+                if (retentionInput) {
+                    retentionInput.checked = true;
+                }
+                
+                modal.classList.add('active');
+            } catch (error) {
+                console.error('Error fetching request:', error);
+                showToast('Error', 'Failed to load request data', 'failed');
+            }
+        }
+        
+        function closeManageRequestModal() {
+            document.getElementById('manageRequestModal').classList.remove('active');
+            currentRequestId = null;
+            currentMediaRequest = null;
+        }
+        
+        async function createAvailableRequest(tmdbId, mediaType, title) {
+            // Update card UI immediately
+            const card = document.querySelector(`[data-tmdb-id="${tmdbId}"][data-media-type="${mediaType}"]`);
+            if (card) {
+                const overlayButtonId = `overlay-btn-${tmdbId}-${mediaType}`;
+                const button = document.getElementById(overlayButtonId);
+                if (button) {
+                    button.innerHTML = '<div class="status-indicator">Creating...</div>';
+                }
+            }
+            
+            // Clear status cache before API call
+            const cacheKey = `${tmdbId}-${mediaType}`;
+            statusCache.delete(cacheKey);
+            
+            // Create a request with status='available'
+            try {
+                const response = await fetch('/api/manage', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({
+                        tmdb_id: tmdbId,
+                        media_type: mediaType,
+                        retention_type: 'watch_once'  // Default
+                    })
+                });
+                
+                if (!response.ok) {
+                    const error = await response.json();
+                    throw new Error(error.detail || 'Failed to create request');
+                }
+                
+                const data = await response.json();
+                currentRequestId = data.id;
+                
+                // Force card status refresh
+                await forceCardStatusCheck(tmdbId, mediaType);
+                
+                // Now open the modal
+                await openManageRequestModal(tmdbId, mediaType, title);
+            } catch (error) {
+                console.error('Error creating available request:', error);
+                showToast('Error', 'Failed to create request', 'failed');
+                
+                // Refresh card status on error
+                await forceCardStatusCheck(tmdbId, mediaType);
+            }
+        }
+        
+        async function updateRetention() {
+            const selectedRetention = document.querySelector('input[name="manage-retention"]:checked');
+            if (!selectedRetention || !currentRequestId || !currentMediaRequest) return;
+            
+            const retentionType = selectedRetention.value;
+            const {tmdbId, mediaType} = currentMediaRequest;
+            
+            // Clear status cache before API call
+            const cacheKey = `${tmdbId}-${mediaType}`;
+            statusCache.delete(cacheKey);
+            
+            try {
+                const response = await fetch(`/api/requests/${currentRequestId}/retention`, {
+                    method: 'PUT',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({
+                        retention_type: retentionType
+                    })
+                });
+                
+                if (!response.ok) {
+                    const error = await response.json();
+                    throw new Error(error.detail || 'Failed to update retention');
+                }
+                
+                showToast('Success', `Retention updated to ${retentionType.replace(/_/g, ' ')}`, 'available');
+                closeManageRequestModal();
+                
+                // Force card status refresh
+                await forceCardStatusCheck(tmdbId, mediaType);
+            } catch (error) {
+                console.error('Error updating retention:', error);
+                showToast('Error', 'Failed to update retention', 'failed');
+            }
         }
         
         // Submit request
