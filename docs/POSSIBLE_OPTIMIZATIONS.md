@@ -51,3 +51,4 @@
 
 7. Add "Console" tab to the sidebar
  - This will have a stripped down console that can show debug messages to users to allow easier troubleshooting
+ *** Started - Not complete ***

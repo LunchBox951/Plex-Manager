@@ -4,6 +4,8 @@ import time
 from typing import Optional
 from sqlalchemy.orm import Session
 
+from src.console import print_info as info, print_error as error, print_warning as warning
+
 class Movie:
     def __init__(self, item):
         self.plex_item = item
@@ -20,11 +22,11 @@ class Movie:
 
                 # Delete the entire movie folder
                 shutil.rmtree(movie_folder)
-                print(f"Deleted movie: {self.title}")
+                info(f"[MEDIA] Deleted movie: {self.title}")
             except Exception as e:
-                print(f"Error deleting movie {self.title}: {e}")
+                error(f"[MEDIA] Error deleting movie {self.title}: {e}")
         else:
-            print(f"No file path found for movie {self.title}")
+            warning(f"[MEDIA] No file path found for movie {self.title}")
     
 class TVShow:
     class Episode:
@@ -45,21 +47,21 @@ class TVShow:
                     
                     # Delete the episode file
                     os.remove(self.file_path)
-                    print(f"Deleted: S{self.season_number:02d}E{self.episode_number:02d} - {self.title}")
+                    info(f"[MEDIA] Deleted: S{self.season_number:02d}E{self.episode_number:02d} - {self.title}")
                     
                     # Check if season folder is empty and delete it
                     if os.path.exists(season_folder) and not os.listdir(season_folder):
                         os.rmdir(season_folder)
-                        print(f"Deleted empty season folder: {os.path.basename(season_folder)}")
+                        info(f"[MEDIA] Deleted empty season folder: {os.path.basename(season_folder)}")
                         
                         # Check if show folder is empty and delete it
                         if os.path.exists(show_folder) and not os.listdir(show_folder):
                             os.rmdir(show_folder)
-                            print(f"Deleted empty show folder: {os.path.basename(show_folder)}")
+                            info(f"[MEDIA] Deleted empty show folder: {os.path.basename(show_folder)}")
                 except Exception as e:
-                    print(f"Error deleting episode {self.title}: {e}")
+                    error(f"[MEDIA] Error deleting episode {self.title}: {e}")
             else:
-                print(f"No file path found for episode {self.title}")
+                warning(f"[MEDIA] No file path found for episode {self.title}")
 
     class Season:
         def __init__(self, season_item):
@@ -106,15 +108,15 @@ def get_movies_to_delete(movies: list[Movie], days_threshold: int, db: Optional[
                         )
                         
                         if protected or effective_retention == 'forever':
-                            print(f"Skipping {movie.title} - protected by retention policy")
+                            info(f"[MEDIA] Skipping {movie.title} - protected by retention policy")
                             continue  # Skip to next movie
                         
                         # If watch_once or watch_as_released, let retention system handle it
                         # Don't apply legacy time-based deletion
-                        print(f"Skipping {movie.title} - managed by retention system")
+                        info(f"[MEDIA] Skipping {movie.title} - managed by retention system")
                         continue
             except Exception as e:
-                print(f"Error checking retention for {movie.title}: {e}")
+                error(f"[MEDIA] Error checking retention for {movie.title}: {e}")
                 # Continue with legacy logic if retention check fails
         
         # Legacy time-based deletion for media without retention policies
@@ -156,7 +158,7 @@ def get_episodes_to_delete(tv_shows: list[TVShow], days_threshold: int, db: Opti
                     
                     if show_protected or show_retention == 'forever':
                         # Entire show is protected
-                        print(f"Skipping {show.title} - protected by retention policy")
+                        info(f"[MEDIA] Skipping {show.title} - protected by retention policy")
                         continue  # Skip this entire show
                     
                     # Check for episode-specific overrides
@@ -178,7 +180,7 @@ def get_episodes_to_delete(tv_shows: list[TVShow], days_threshold: int, db: Opti
                             retention_managed_episodes.add(ep_key)
                 
             except Exception as e:
-                print(f"Error checking retention for {show.title}: {e}")
+                error(f"[MEDIA] Error checking retention for {show.title}: {e}")
                 protected_episodes = set()
                 retention_managed_episodes = set()
         else:

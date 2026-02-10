@@ -18,6 +18,7 @@ from src.database import get_db
 from src.models import User, Permission
 from src.encryption import get_encryption
 from src.plex import is_plex_server_owner
+from src.console import print_info, print_success, print_error, print_warning, print_debug
 
 # Router for auth endpoints
 router = APIRouter()
@@ -115,7 +116,7 @@ async def start_auth():
     Generate a Plex PIN and return the PIN ID and auth URL.
     Used by the frontend to initiate authentication.
     """
-    print("Generating Plex PIN for authentication...")
+    print_info("Generating Plex PIN for authentication...", prefix="AUTH")
     
     try:
         response = requests.post(
@@ -129,7 +130,7 @@ async def start_auth():
         response.raise_for_status()
         pin_data = response.json()
         
-        print(f"Generated PIN: {pin_data['code']}, ID: {pin_data['id']}")
+        print_success(f"Generated PIN: {pin_data['code']}, ID: {pin_data['id']}")
         
         # Build Plex OAuth URL with properly formatted context
         auth_url = (
@@ -139,7 +140,7 @@ async def start_auth():
             f"&forwardUrl=http://localhost:8000"
         )
         
-        print(f"Auth URL: {auth_url}")
+        print_debug(f"Auth URL: {auth_url}")
         
         return {
             "pin_id": pin_data['id'],
@@ -147,7 +148,7 @@ async def start_auth():
         }
     
     except Exception as e:
-        print(f"Error generating PIN: {e}")
+        print_error(f"Error generating PIN: {e}")
         raise HTTPException(status_code=500, detail="Failed to generate Plex PIN")
 
 
@@ -157,7 +158,7 @@ async def login(request: Request):
     Initiate Plex OAuth flow by generating a PIN.
     Returns auth popup page that handles the OAuth flow.
     """
-    print("Initiating Plex OAuth login...")
+    print_info("Initiating Plex OAuth login...", prefix="AUTH")
     
     # Generate Plex PIN
     try:
@@ -172,7 +173,7 @@ async def login(request: Request):
         response.raise_for_status()
         pin_data = response.json()
         
-        print(f"Generated PIN: {pin_data['code']}, ID: {pin_data['id']}")
+        print_success(f"Generated PIN: {pin_data['code']}, ID: {pin_data['id']}")
         
         # Build Plex OAuth URL
         # The user needs to navigate to this URL to authorize the PIN
@@ -183,7 +184,7 @@ async def login(request: Request):
             f"context%5Bdevice%5D%5Bproduct%5D=Plex%20Manager"
         )
         
-        print(f"OAuth URL: {auth_url}")
+        print_debug(f"OAuth URL: {auth_url}")
         
         # Return auth popup template with PIN ID and auth URL
         from src.main_api import templates
@@ -197,7 +198,7 @@ async def login(request: Request):
         )
     
     except Exception as e:
-        print(f"Error generating PIN: {e}")
+        print_error(f"Error generating PIN: {e}")
         raise HTTPException(status_code=500, detail="Failed to initiate Plex login")
 
 
@@ -226,11 +227,11 @@ async def poll_pin(pin_id: str, db: Session = Depends(get_db)):
             # Still pending - user hasn't authenticated yet
             return JSONResponse({"status": "pending"})
         
-        print(f"PIN {pin_id} authenticated successfully!")
+        print_success(f"PIN {pin_id} authenticated successfully!")
         
         # Get Plex user info
         account = MyPlexAccount(token=auth_token)
-        print(f"Plex user: {account.username} (ID: {account.id})")
+        print_info(f"Plex user: {account.username} (ID: {account.id})", prefix="AUTH")
         
         # Encrypt Plex token
         encryption = get_encryption()
@@ -241,7 +242,7 @@ async def poll_pin(pin_id: str, db: Session = Depends(get_db)):
         
         if user:
             # Update existing user
-            print(f"Updating existing user: {user.username}")
+            print_info(f"Updating existing user: {user.username}", prefix="AUTH")
             user.last_login = datetime.utcnow()
             user.encrypted_plex_token = encrypted_token
             
@@ -249,16 +250,16 @@ async def poll_pin(pin_id: str, db: Session = Depends(get_db)):
             is_owner = is_plex_server_owner(auth_token)
             if is_owner:
                 if not user.has_permission(Permission.ADMIN):
-                    print(f"Server owner detected - granting admin privileges to {user.username}")
+                    print_success(f"Server owner detected - granting admin privileges to {user.username}")
                     user.permissions = Permission.ADMIN
             else:
                 # Ensure non-owners only have request permissions
                 if user.has_permission(Permission.ADMIN):
-                    print(f"User {user.username} is no longer server owner - removing admin privileges")
+                    print_warning(f"User {user.username} is no longer server owner - removing admin privileges")
                 user.permissions = Permission.CAN_REQUEST
         else:
             # Create new user
-            print(f"Creating new user: {account.username}")
+            print_info(f"Creating new user: {account.username}", prefix="AUTH")
             
             # Check if user is the server owner
             is_owner = is_plex_server_owner(auth_token)
@@ -275,9 +276,9 @@ async def poll_pin(pin_id: str, db: Session = Depends(get_db)):
             db.add(user)
             
             if is_owner:
-                print(f"✓ Server owner detected - granted admin privileges to {account.username}")
+                print_success(f"Server owner detected - granted admin privileges to {account.username}")
             else:
-                print(f"✗ Not server owner - granted request-only permissions to {account.username}")
+                print_info(f"Not server owner - granted request-only permissions to {account.username}", prefix="AUTH")
         
         db.commit()
         db.refresh(user)
@@ -293,7 +294,7 @@ async def poll_pin(pin_id: str, db: Session = Depends(get_db)):
         })
     
     except Exception as e:
-        print(f"Error polling PIN: {e}")
+        print_error(f"Error polling PIN: {e}")
         return JSONResponse({"status": "error", "message": str(e)}, status_code=500)
 
 
@@ -303,7 +304,7 @@ async def auth_callback(token: str, response: Response):
     Handle OAuth callback by setting cookie.
     Token is passed from polling endpoint.
     """
-    print("Setting auth cookie...")
+    print_debug("Setting auth cookie...")
     
     # Set httpOnly cookie
     set_auth_cookie(response, token)
@@ -332,7 +333,7 @@ async def get_me(
 @router.post("/api/auth/logout")
 async def logout(response: Response):
     """Logout by clearing the session cookie."""
-    print("Logging out user...")
+    print_info("Logging out user...", prefix="AUTH")
     
     response.delete_cookie(key="session_token")
     return {"message": "Logged out successfully"}

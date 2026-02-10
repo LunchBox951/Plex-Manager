@@ -7,6 +7,8 @@ import re
 import os
 from typing import Dict, List, Optional, Tuple, Any
 
+from src.console import print_debug, print_error
+
 
 # File type allowlists
 VIDEO_EXTENSIONS = {
@@ -220,9 +222,9 @@ def extract_episode_info_fallback(filename: str) -> Optional[Dict[str, Any]]:
                 "episode_name": guess.get('episode_title', None)
             }
     except ImportError:
-        print("guessit not installed, skipping fallback parsing")
+        print_debug("guessit not installed, skipping fallback parsing")
     except Exception as e:
-        print(f"Error using guessit: {e}")
+        print_error(f"Error using guessit: {e}")
     
     return None
 

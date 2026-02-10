@@ -6,7 +6,6 @@ Includes media request workflow with Prowlarr integration.
 
 import os
 import json
-import logging
 import time
 import asyncio
 from datetime import datetime, timedelta
@@ -22,8 +21,7 @@ from src.qbittorrent import get_qbittorrent_client, QBittorrentClient
 from src.torrent_validator import validate_torrent_files
 from src.auth import get_current_user
 from src.retention import get_effective_retention
-
-logger = logging.getLogger(__name__)
+from src.console import print_info, print_warning, print_error, print_debug, print_monitor, print_success
 
 
 router = APIRouter()
@@ -72,26 +70,26 @@ async def await_torrent_connection(
                 files = qb.get_torrent_files(info_hash)
                 
                 if files:
-                    logger.info(f"✓ Torrent connected on attempt {attempt + 1}/{max_retries}")
+                    print_info(f"✓ Torrent connected on attempt {attempt + 1}/{max_retries}", prefix="DOWNLOADS")
                     return (True, torrent_info, files)
                 else:
-                    logger.warning(f"Torrent info found but no files yet (attempt {attempt + 1}/{max_retries})")
+                    print_warning(f"Torrent info found but no files yet (attempt {attempt + 1}/{max_retries})", prefix="DOWNLOADS")
             else:
-                logger.warning(f"Torrent not found in qBittorrent (attempt {attempt + 1}/{max_retries})")
+                print_warning(f"Torrent not found in qBittorrent (attempt {attempt + 1}/{max_retries})", prefix="DOWNLOADS")
             
             # If not last attempt, wait before retry using async sleep
             if attempt < max_retries - 1:
                 wait_time = intervals[attempt] if attempt < len(intervals) else intervals[-1]
-                logger.info(f"Waiting {wait_time}s before retry...")
+                print_info(f"Waiting {wait_time}s before retry...", prefix="DOWNLOADS")
                 await asyncio.sleep(wait_time)
         
         except Exception as e:
-            logger.error(f"Error checking torrent on attempt {attempt + 1}: {e}")
+            print_error(f"Error checking torrent on attempt {attempt + 1}: {e}", prefix="DOWNLOADS")
             if attempt < max_retries - 1:
                 wait_time = intervals[attempt] if attempt < len(intervals) else intervals[-1]
                 await asyncio.sleep(wait_time)
     
-    logger.error(f"✗ Failed to connect to torrent after {max_retries} attempts")
+    print_error(f"✗ Failed to connect to torrent after {max_retries} attempts", prefix="DOWNLOADS")
     return (False, None, None)
 
 
@@ -368,7 +366,7 @@ async def get_active_downloads(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Failed to get active downloads: {e}")
+        print_error(f"Failed to get active downloads: {e}", prefix="DOWNLOADS")
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
@@ -555,11 +553,11 @@ async def request_media(
     from src.prowlarr import get_prowlarr_client, CATEGORY_MOVIES, CATEGORY_TV
     from src.scoring import rank_torrents, select_best_torrent
     
-    logger.info(f"Media request: TMDB {request.tmdb_id} ({request.media_type})")
+    print_info(f"Media request: TMDB {request.tmdb_id} ({request.media_type})", prefix="DOWNLOADS")
     
     try:
         # Step 1: Get TMDB metadata
-        logger.info("Fetching TMDB metadata...")
+        print_info("Fetching TMDB metadata...", prefix="DOWNLOADS")
         if request.media_type == 'movie':
             tmdb_data = get_movie_details(request.tmdb_id)
             title = tmdb_data.get('title')
@@ -572,10 +570,10 @@ async def request_media(
         if not title:
             raise HTTPException(status_code=404, detail="Media not found on TMDB")
         
-        logger.info(f"Found: {title} ({year})")
+        print_info(f"Found: {title} ({year})", prefix="DOWNLOADS")
         
         # Step 2: Check Plex for existing media
-        logger.info("Checking Plex for duplicates...")
+        print_info("Checking Plex for duplicates...", prefix="DOWNLOADS")
         plex_check = check_media_exists(
             tmdb_title=title,
             year=year,
@@ -589,11 +587,11 @@ async def request_media(
             if plex_check.get('partial') and plex_check.get('missing_episodes'):
                 # Update request to only download missing episodes
                 missing_eps = plex_check['missing_episodes']
-                logger.info(f"Partial match in Plex, requesting missing episodes: {missing_eps}")
+                print_info(f"Partial match in Plex, requesting missing episodes: {missing_eps}", prefix="DOWNLOADS")
                 request.episodes = missing_eps
             else:
                 # Media fully exists
-                logger.info("Media already exists in Plex")
+                print_info("Media already exists in Plex", prefix="DOWNLOADS")
                 return MediaRequestResponse(
                     status="already_exists",
                     message=f"{title} already available in Plex",
@@ -601,7 +599,7 @@ async def request_media(
                 )
         
         # Step 3: Search Prowlarr
-        logger.info("Searching Prowlarr...")
+        print_info("Searching Prowlarr...", prefix="DOWNLOADS")
         prowlarr = get_prowlarr_client()
         
         # Build search query
@@ -617,7 +615,7 @@ async def request_media(
         if not torrents:
             raise HTTPException(status_code=422, detail=f"No torrents found for {title}")
         
-        logger.info(f"Found {len(torrents)} torrents from Prowlarr")
+        print_monitor({"torrents_found": len(torrents), "media_type": request.media_type, "title": title}, prefix="DOWNLOADS")
         
         # Step 4: Get failed hashes to exclude
         failed_downloads = db.query(Download).filter(
@@ -626,7 +624,7 @@ async def request_media(
         failed_hashes = {d.torrent_hash.lower() for d in failed_downloads}
         
         # Step 5: Score and rank torrents
-        logger.info("Scoring torrents...")
+        print_info("Scoring torrents...", prefix="DOWNLOADS")
         qb = get_qbittorrent_client()
         
         scored_torrents = rank_torrents(
@@ -648,7 +646,7 @@ async def request_media(
         if not best_torrent:
             raise HTTPException(status_code=422, detail="No torrents meet minimum quality requirements")
         
-        logger.info(f"Selected: {best_torrent.torrent.title} (score: {best_torrent.final_score:.2f})")
+        print_info(f"Selected: {best_torrent.torrent.title} (score: {best_torrent.final_score:.2f})", prefix="DOWNLOADS")
         
         # Step 7: Add to qBittorrent
         max_attempts = 3
@@ -662,7 +660,7 @@ async def request_media(
                 # Check for duplicates
                 existing = db.query(Download).filter(Download.torrent_hash == info_hash).first()
                 if existing:
-                    logger.info(f"Torrent already in downloads: {existing.id}")
+                    print_info(f"Torrent already in downloads: {existing.id}", prefix="DOWNLOADS")
                     return MediaRequestResponse(
                         status="success",
                         message="Torrent already downloading",
@@ -735,7 +733,7 @@ async def request_media(
                 db.commit()
                 db.refresh(download)
                 
-                logger.info(f"Download added successfully: ID {download.id}")
+                print_monitor({"download_id": download.id, "status": "added", "media_type": request.media_type}, prefix="DOWNLOADS")
                 
                 # Create SeasonRequest if TV show
                 if request.media_type == 'tv' and request.season:
@@ -764,13 +762,13 @@ async def request_media(
                 )
             
             except Exception as e:
-                logger.error(f"Attempt {attempt + 1} failed: {e}")
+                print_error(f"Attempt {attempt + 1} failed: {e}", prefix="DOWNLOADS")
                 
                 if attempt < max_attempts - 1:
                     # Try next best torrent
                     if attempt + 1 < len(scored_torrents):
                         best_torrent = scored_torrents[attempt + 1]
-                        logger.info(f"Retrying with next torrent: {best_torrent.torrent.title}")
+                        print_info(f"Retrying with next torrent: {best_torrent.torrent.title}", prefix="DOWNLOADS")
                     else:
                         raise HTTPException(status_code=500, detail=f"All torrents failed: {str(e)}")
                 else:
@@ -779,7 +777,7 @@ async def request_media(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Media request failed: {e}")
+        print_error(f"Media request failed: {e}", prefix="DOWNLOADS")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -850,7 +848,7 @@ async def request_media_unified(
     from src.prowlarr import get_prowlarr_client, CATEGORY_MOVIES, CATEGORY_TV
     from src.scoring import rank_torrents, select_best_torrent
     
-    logger.info(f"[UNIFIED REQUEST] User {current_user.username} - TMDB {request.tmdb_id} ({request.media_type})")
+    print_info(f"[UNIFIED REQUEST] User {current_user.username} - TMDB {request.tmdb_id} ({request.media_type})", prefix="DOWNLOADS")
     
     try:
         # ====================================================================
@@ -874,7 +872,7 @@ async def request_media_unified(
         # Step 2: Fetch TMDB Metadata
         # ====================================================================
         
-        logger.info("[Step 1/9] Fetching TMDB metadata...")
+        print_info("[Step 1/9] Fetching TMDB metadata...", prefix="DOWNLOADS")
         if request.media_type == 'movie':
             tmdb_data = get_movie_details(request.tmdb_id)
             title = tmdb_data.get('title')
@@ -888,13 +886,13 @@ async def request_media_unified(
         if not title:
             raise HTTPException(status_code=404, detail="Media not found on TMDB")
         
-        logger.info(f"Found: {title} ({year})")
+        print_info(f"Found: {title} ({year})", prefix="DOWNLOADS")
         
         # ====================================================================
         # Step 3: Check Plex for Duplicates
         # ====================================================================
         
-        logger.info("[Step 2/9] Checking Plex for duplicates...")
+        print_info("[Step 2/9] Checking Plex for duplicates...", prefix="DOWNLOADS")
         
         if request.media_type == 'movie':
             plex_check = check_media_exists(
@@ -904,7 +902,7 @@ async def request_media_unified(
             )
             
             if plex_check.get('exists'):
-                logger.info("Movie already exists in Plex")
+                print_info("Movie already exists in Plex", prefix="DOWNLOADS")
                 return UnifiedMediaRequestResponse(
                     status="already_exists",
                     message=f"{title} ({year}) already available in Plex",
@@ -951,23 +949,23 @@ async def request_media_unified(
                     missing_seasons[season_num] = plex_check['missing_episodes']
             
             if all_exist:
-                logger.info("All requested content already exists in Plex")
+                print_info("All requested content already exists in Plex", prefix="DOWNLOADS")
                 return UnifiedMediaRequestResponse(
                     status="already_exists",
                     message=f"{title} - all requested content already available in Plex"
                 )
             
             if missing_seasons:
-                logger.info(f"Partial match - will download missing: {missing_seasons}")
+                print_info(f"Partial match - will download missing: {missing_seasons}", prefix="DOWNLOADS")
                 episodes_to_request = missing_seasons
             else:
-                logger.info("No existing content found in Plex, proceeding with full request")
+                print_info("No existing content found in Plex, proceeding with full request", prefix="DOWNLOADS")
         
         # ====================================================================
         # Step 4: Check for Existing Requests
         # ====================================================================
         
-        logger.info("[Step 3/9] Checking for existing requests...")
+        print_info("[Step 3/9] Checking for existing requests...", prefix="DOWNLOADS")
         existing_requests = db.query(MediaRequest).filter(
             MediaRequest.tmdb_id == request.tmdb_id,
             MediaRequest.media_type == request.media_type,
@@ -978,13 +976,13 @@ async def request_media_unified(
             effective_retention, protected = get_effective_retention(
                 db, request.tmdb_id, request.media_type
             )
-            logger.info(f"Found {len(existing_requests)} existing request(s) - Effective retention: {effective_retention}")
+            print_info(f"Found {len(existing_requests)} existing request(s) - Effective retention: {effective_retention}", prefix="DOWNLOADS")
         
         # ====================================================================
         # Step 5: Create MediaRequest Record
         # ====================================================================
         
-        logger.info("[Step 4/9] Creating MediaRequest record...")
+        print_info("[Step 4/9] Creating MediaRequest record...", prefix="DOWNLOADS")
         
         # Determine if we should track upcoming episodes
         track_upcoming = False
@@ -992,7 +990,7 @@ async def request_media_unified(
             if request.seasons is None:
                 # Requesting entire show - track upcoming episodes
                 track_upcoming = True
-                logger.info("Tracking upcoming episodes: entire show requested")
+                print_info("Tracking upcoming episodes: entire show requested", prefix="DOWNLOADS")
             else:
                 # Check if requesting the latest ongoing season
                 from src.models import TMDBSeasonCache
@@ -1005,7 +1003,7 @@ async def request_media_unified(
                     highest_ongoing = max(s.season_number for s in ongoing_seasons)
                     if highest_ongoing in seasons_to_request:
                         track_upcoming = True
-                        logger.info(f"Tracking upcoming episodes: latest ongoing season {highest_ongoing} requested")
+                        print_info(f"Tracking upcoming episodes: latest ongoing season {highest_ongoing} requested", prefix="DOWNLOADS")
         
         media_request = MediaRequest(
             user_id=current_user.id,
@@ -1023,18 +1021,18 @@ async def request_media_unified(
         db.add(media_request)
         db.flush()
         media_request_id = media_request.id
-        logger.info(f"Created MediaRequest ID: {media_request_id}")
+        print_monitor({"media_request_id": media_request_id, "tmdb_id": request.tmdb_id, "media_type": request.media_type}, prefix="DOWNLOADS")
         
         # Commit immediately to release database lock for concurrent requests
         db.commit()
-        logger.debug("MediaRequest committed - database lock released")
+        print_debug("MediaRequest committed - database lock released", prefix="DOWNLOADS")
         
         # ====================================================================
         # Step 6: Create Episode Retention Overrides
         # ====================================================================
         
         if request.media_type == 'tv' and request.episode_retention_overrides:
-            logger.info("[Step 5/9] Creating episode retention overrides...")
+            print_info("[Step 5/9] Creating episode retention overrides...", prefix="DOWNLOADS")
             for override in request.episode_retention_overrides:
                 episode_retention = EpisodeRetention(
                     media_request_id=media_request_id,
@@ -1044,13 +1042,13 @@ async def request_media_unified(
                 )
                 db.add(episode_retention)
             db.commit()
-            logger.info(f"Created {len(request.episode_retention_overrides)} episode overrides")
+            print_info(f"Created {len(request.episode_retention_overrides)} episode overrides", prefix="DOWNLOADS")
         
         # ====================================================================
         # Step 7: Download Torrents
         # ====================================================================
         
-        logger.info("[Step 6/9] Searching and downloading torrents...")
+        print_info("[Step 6/9] Searching and downloading torrents...", prefix="DOWNLOADS")
         download_ids = []
         torrent_details = []
         
@@ -1084,7 +1082,7 @@ async def request_media_unified(
                     media_request.status = 'failed'
                     db.commit()
                 
-                logger.error(f"[NOTIFICATION PLACEHOLDER] Notify user {current_user.username}: Request failed - {error}")
+                print_error(f"[NOTIFICATION PLACEHOLDER] Notify user {current_user.username}: Request failed - {error}", prefix="DOWNLOADS")
                 
                 raise HTTPException(status_code=422, detail=error)
             
@@ -1093,7 +1091,7 @@ async def request_media_unified(
         
         else:
             for season_num, requested_eps in episodes_to_request.items():
-                logger.info(f"Downloading Season {season_num} (episodes: {requested_eps or 'all'})")
+                print_info(f"Downloading Season {season_num} (episodes: {requested_eps or 'all'})", prefix="DOWNLOADS")
                 
                 success, download_id, torrent_info, error = await _download_torrent(
                     prowlarr=prowlarr,
@@ -1110,7 +1108,7 @@ async def request_media_unified(
                 )
                 
                 if not success:
-                    logger.error(f"Failed to download Season {season_num}: {error}")
+                    print_error(f"Failed to download Season {season_num}: {error}", prefix="DOWNLOADS")
                     # Mark as partial on first failure (will update in Step 8)
                     torrent_details.append({
                         'season': season_num,
@@ -1125,7 +1123,7 @@ async def request_media_unified(
         # Step 8: Update MediaRequest Status
         # ====================================================================
         
-        logger.info("[Step 7/9] Updating MediaRequest status...")
+        print_info("[Step 7/9] Updating MediaRequest status...", prefix="DOWNLOADS")
         media_request = db.query(MediaRequest).filter(MediaRequest.id == media_request_id).first()
         if media_request:
             if len(download_ids) == 0:
@@ -1143,10 +1141,10 @@ async def request_media_unified(
         # Step 9: Notification Placeholder
         # ====================================================================
         
-        logger.info("[Step 8/9] [NOTIFICATION PLACEHOLDER] Sending notification...")
-        logger.info(f"[NOTIFICATION PLACEHOLDER] Notify user {current_user.username}: '{title}' download started with {len(download_ids)} torrent(s)")
+        print_info("[Step 8/9] [NOTIFICATION PLACEHOLDER] Sending notification...", prefix="DOWNLOADS")
+        print_info(f"[NOTIFICATION PLACEHOLDER] Notify user {current_user.username}: '{title}' download started with {len(download_ids)} torrent(s)", prefix="DOWNLOADS")
         
-        logger.info(f"[Step 9/9] Request completed - MediaRequest ID: {media_request_id}, Downloads: {download_ids}")
+        print_monitor({"status": "completed", "media_request_id": media_request_id, "downloads": download_ids, "user": current_user.username}, prefix="DOWNLOADS")
         
         return UnifiedMediaRequestResponse(
             status="success",
@@ -1159,8 +1157,8 @@ async def request_media_unified(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"[ERROR] Unified request failed: {e}", exc_info=True)
-        logger.error(f"[NOTIFICATION PLACEHOLDER] Notify user {current_user.username}: Request error - {str(e)}")
+        print_error(f"[ERROR] Unified request failed: {e}", prefix="DOWNLOADS", exc_info=True)
+        print_error(f"[NOTIFICATION PLACEHOLDER] Notify user {current_user.username}: Request error - {str(e)}", prefix="DOWNLOADS")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -1190,7 +1188,7 @@ async def _download_torrent(
         if not torrents:
             return (False, None, None, f"No torrents found for {title}")
         
-        logger.info(f"Found {len(torrents)} torrents from Prowlarr")
+        print_monitor({"torrents_found": len(torrents), "query": query}, prefix="DOWNLOADS")
         
         scored_torrents = rank_torrents(
             torrents=torrents,
@@ -1209,7 +1207,7 @@ async def _download_torrent(
         if not best_torrent:
             return (False, None, None, "No torrents meet minimum quality requirements")
         
-        logger.info(f"Selected: {best_torrent.torrent.title} (score: {best_torrent.final_score:.2f})")
+        print_info(f"Selected: {best_torrent.torrent.title} (score: {best_torrent.final_score:.2f})", prefix="DOWNLOADS")
         
         # Helper function to validate torrent title matches the requested show
         def title_matches(torrent_title: str, expected_title: str) -> bool:
@@ -1260,20 +1258,20 @@ async def _download_torrent(
             best_torrent = scored_torrents[torrent_index]
             
             if torrent_index > 0:
-                logger.info(f"[Torrent Fallback {actual_attempts}/{max_download_attempts}] Trying: {best_torrent.torrent.title}")
+                print_info(f"[Torrent Fallback {actual_attempts}/{max_download_attempts}] Trying: {best_torrent.torrent.title}", prefix="DOWNLOADS")
             
             torrent_index += 1  # Always increment to move to next torrent
             
             # Validate title matches BEFORE checking info hash
             if not title_matches(best_torrent.torrent.title, title):
-                logger.warning(f"Torrent title mismatch: '{best_torrent.torrent.title}' doesn't match '{title}', skipping (not counted toward limit)")
+                print_warning(f"Torrent title mismatch: '{best_torrent.torrent.title}' doesn't match '{title}', skipping (not counted toward limit)", prefix="DOWNLOADS")
                 continue
             
             # Check for multi-season packs when requesting a single season
             # Import here to avoid circular dependency
             from src.scoring import is_multi_season_pack
             if is_multi_season_pack(best_torrent.torrent.title):
-                logger.warning(f"Multi-season pack detected: '{best_torrent.torrent.title}' - rejecting (single season requested), skipping (not counted toward limit)")
+                print_warning(f"Multi-season pack detected: '{best_torrent.torrent.title}' - rejecting (single season requested), skipping (not counted toward limit)", prefix="DOWNLOADS")
                 continue
             
             try:
@@ -1283,7 +1281,7 @@ async def _download_torrent(
                     info_hash = QBittorrentClient.extract_info_hash(best_torrent.torrent.magnet_link)
                 
                 if not info_hash:
-                    logger.warning(f"Could not get info hash for torrent, skipping (not counted toward limit)")
+                    print_warning(f"Could not get info hash for torrent, skipping (not counted toward limit)", prefix="DOWNLOADS")
                     continue
                 
                 # Count this as an actual attempt since we have a valid hash
@@ -1293,13 +1291,13 @@ async def _download_torrent(
                 try:
                     existing = db.query(Download).filter(Download.torrent_hash == info_hash).first()
                     if existing:
-                        logger.info(f"Found existing Download ID {existing.id} - verifying in qBittorrent...")
+                        print_info(f"Found existing Download ID {existing.id} - verifying in qBittorrent...", prefix="DOWNLOADS")
                         
                         # Verify torrent actually exists in qBittorrent
                         try:
                             qb_torrent = qb.get_torrent_info(info_hash)
                             if qb_torrent:
-                                logger.info(f"✓ Torrent exists in qBittorrent - reusing Download ID {existing.id}")
+                                print_info(f"✓ Torrent exists in qBittorrent - reusing Download ID {existing.id}", prefix="DOWNLOADS")
                                 
                                 if not existing.media_request_id:
                                     existing.media_request_id = media_request_id
@@ -1314,21 +1312,21 @@ async def _download_torrent(
                                     'existing': True
                                 }, None)
                             else:
-                                logger.warning(f"Download {existing.id} exists in DB but not in qBittorrent - trying next torrent")
+                                print_warning(f"Download {existing.id} exists in DB but not in qBittorrent - trying next torrent", prefix="DOWNLOADS")
                                 # Don't return, continue to next torrent
                         except Exception as qb_error:
-                            logger.warning(f"Error verifying torrent in qBittorrent: {qb_error} - trying next torrent")
+                            print_warning(f"Error verifying torrent in qBittorrent: {qb_error} - trying next torrent", prefix="DOWNLOADS")
                             # Don't return, continue to next torrent
                 except Exception as e:
-                    logger.warning(f"Error checking existing torrent: {e}")
+                    print_warning(f"Error checking existing torrent: {e}", prefix="DOWNLOADS")
                 
                 # Add to qBittorrent
                 category = media_type
                 save_path = os.getenv('DOWNLOADS_PATH')
                 
-                logger.info(f"[ATTEMPT {actual_attempts}/{max_download_attempts}] Adding magnet to qBittorrent...")
-                logger.debug(f"  Category: {category}, Save path: {save_path}")
-                logger.debug(f"  Magnet link: {best_torrent.torrent.magnet_link[:100]}...")
+                print_info(f"[ATTEMPT {actual_attempts}/{max_download_attempts}] Adding magnet to qBittorrent...", prefix="DOWNLOADS")
+                print_debug(f"  Category: {category}, Save path: {save_path}", prefix="DOWNLOADS")
+                print_debug(f"  Magnet link: {best_torrent.torrent.magnet_link[:100]}...", prefix="DOWNLOADS")
                 
                 success = qb.add_magnet(
                     best_torrent.torrent.magnet_link,
@@ -1337,22 +1335,22 @@ async def _download_torrent(
                 )
                 
                 if not success:
-                    logger.warning(f"qBittorrent failed to accept magnet, trying next torrent")
+                    print_warning(f"qBittorrent failed to accept magnet, trying next torrent", prefix="DOWNLOADS")
                     failed_hashes.add(info_hash)
                     continue
                 
-                logger.info(f"✓ Magnet accepted by qBittorrent")
+                print_info(f"✓ Magnet accepted by qBittorrent", prefix="DOWNLOADS")
                 
                 # Wait for torrent to connect with progressive retry (10s×3, 30s×1, 60s×1)
-                logger.info(f"Waiting for torrent to connect and retrieve metadata...")
-                logger.debug(f"About to await await_torrent_connection for hash: {info_hash}")
+                print_info(f"Waiting for torrent to connect and retrieve metadata...", prefix="DOWNLOADS")
+                print_debug(f"About to await await_torrent_connection for hash: {info_hash}", prefix="DOWNLOADS")
                 
                 connection_success, torrent_info, files = await await_torrent_connection(qb, info_hash)
                 
-                logger.debug(f"await_torrent_connection returned: success={connection_success}, info={torrent_info is not None}, files={files is not None}")
+                print_debug(f"await_torrent_connection returned: success={connection_success}, info={torrent_info is not None}, files={files is not None}", prefix="DOWNLOADS")
                 
                 if not connection_success or not torrent_info or not files:
-                    logger.warning(f"Failed to connect to torrent after all retries, trying next torrent")
+                    print_warning(f"Failed to connect to torrent after all retries, trying next torrent", prefix="DOWNLOADS")
                     qb.delete_torrent(info_hash, delete_files=True)
                     failed_hashes.add(info_hash)
                     continue
@@ -1360,7 +1358,7 @@ async def _download_torrent(
                 # Validate files
                 validation = validate_torrent_files(files)
                 if not validation.valid:
-                    logger.warning(f"Torrent validation failed: {validation.reason}")
+                    print_warning(f"Torrent validation failed: {validation.reason}", prefix="DOWNLOADS")
                     qb.delete_torrent(info_hash, delete_files=True)
                     failed_hashes.add(info_hash)
                     continue
@@ -1408,9 +1406,9 @@ async def _download_torrent(
                     
                     # Commit immediately to release database lock
                     db.commit()
-                    logger.debug("Download record committed - database lock released")
+                    print_debug("Download record committed - database lock released", prefix="DOWNLOADS")
                     
-                    logger.info(f"✓ Successfully created Download ID: {download_id}")
+                    print_monitor({"download_id": download_id, "status": "created", "torrent_title": best_torrent.torrent.title}, prefix="DOWNLOADS")
                     
                     return (True, download_id, {
                         'title': best_torrent.torrent.title,
@@ -1426,10 +1424,10 @@ async def _download_torrent(
                 except IntegrityError as ie:
                     # Another thread created this torrent hash already
                     db.rollback()
-                    logger.info(f"Torrent hash collision detected, checking for existing download")
+                    print_info(f"Torrent hash collision detected, checking for existing download", prefix="DOWNLOADS")
                     existing = db.query(Download).filter(Download.torrent_hash == info_hash).first()
                     if existing:
-                        logger.info(f"Using existing Download ID: {existing.id}")
+                        print_info(f"Using existing Download ID: {existing.id}", prefix="DOWNLOADS")
                         if not existing.media_request_id:
                             existing.media_request_id = media_request_id
                             db.flush()
@@ -1444,19 +1442,19 @@ async def _download_torrent(
                             'existing': True
                         }, None)
                     else:
-                        logger.error(f"IntegrityError but no existing download found: {ie}")
+                        print_error(f"IntegrityError but no existing download found: {ie}", prefix="DOWNLOADS")
                         failed_hashes.add(info_hash)
                         continue
                 
                 except Exception as db_error:
                     # Handle database lock or other errors
                     db.rollback()
-                    logger.error(f"Database error creating Download: {db_error}")
+                    print_error(f"Database error creating Download: {db_error}", prefix="DOWNLOADS")
                     failed_hashes.add(info_hash)
                     continue
             
             except Exception as e:
-                logger.error(f"[Attempt {actual_attempts}/{max_download_attempts}] Error: {e}")
+                print_error(f"[Attempt {actual_attempts}/{max_download_attempts}] Error: {e}", prefix="DOWNLOADS")
                 failed_hashes.add(info_hash) if info_hash else None
                 continue
         
@@ -1467,7 +1465,7 @@ async def _download_torrent(
             return (False, None, None, f"Exhausted all {torrent_index} available torrents ({actual_attempts} actual attempts)")
     
     except Exception as e:
-        logger.error(f"Download torrent error: {e}")
+        print_error(f"Download torrent error: {e}", prefix="DOWNLOADS")
         return (False, None, None, str(e))
 
 
@@ -1492,7 +1490,7 @@ async def search_media(
     from src.prowlarr import get_prowlarr_client, CATEGORY_MOVIES, CATEGORY_TV
     from src.scoring import rank_torrents
     
-    logger.info(f"Media search preview: TMDB {request.tmdb_id} ({request.media_type})")
+    print_info(f"Media search preview: TMDB {request.tmdb_id} ({request.media_type})", prefix="DOWNLOADS")
     
     try:
         # Get TMDB metadata
@@ -1580,6 +1578,6 @@ async def search_media(
         }
     
     except Exception as e:
-        logger.error(f"Media search failed: {e}")
+        print_error(f"Media search failed: {e}", prefix="DOWNLOADS")
         raise HTTPException(status_code=500, detail=str(e))
 

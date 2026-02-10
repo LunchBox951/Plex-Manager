@@ -12,7 +12,6 @@ import os
 import sys
 import json
 import time
-import logging
 import asyncio
 from collections import deque
 from datetime import datetime, timedelta, date
@@ -23,7 +22,7 @@ import requests
 import httpx
 from filelock import FileLock
 
-logger = logging.getLogger(__name__)
+from src.console import print_error, print_warning, print_info, print_success, print_monitor
 
 
 # ============================================================================
@@ -34,9 +33,9 @@ logger = logging.getLogger(__name__)
 TMDB_API_KEY = os.environ.get('TMDB_API_KEY', '')
 
 if not TMDB_API_KEY:
-    print("ERROR: TMDB API key not configured!")
-    print("Please set TMDB_API_KEY in your .env file")
-    print("Get your API key from: https://www.themoviedb.org/settings/api")
+    print_error("TMDB API key not configured!")
+    print_error("Please set TMDB_API_KEY in your .env file")
+    print_error("Get your API key from: https://www.themoviedb.org/settings/api")
     sys.exit(1)
 
 
@@ -82,7 +81,7 @@ class TMDBRateLimiter:
             wait_time = self.time_window - (current_time - oldest_request) + 0.1  # Add buffer
             
             if wait_time > 0:
-                print(f"Rate limit reached. Waiting {wait_time:.2f} seconds...")
+                print_monitor({"status": "rate_limit", "wait_time": round(wait_time, 2), "message": f"TMDB rate limit reached. Waiting {wait_time:.2f} seconds..."})
                 time.sleep(wait_time)
                 # Recursively check again after waiting
                 self._check_rate_limit()
@@ -143,56 +142,44 @@ def safe_tmdb_call(api_function, *args, max_retries: int = 3, retry_delay: int =
     # Try to execute the API call
     try:
         result = api_function(*args, **kwargs)
-        # Log result type for debugging
-        if result is not None:
-            logger.debug(f"TMDB API returned: type={type(result)}, len={len(result) if hasattr(result, '__len__') else 'N/A'}")
-            if isinstance(result, list) and result:
-                logger.debug(f"First item type: {type(result[0])}")
         return result
     except requests.exceptions.Timeout as e:
-        print(f"WARNING: TMDB API timeout: {e}")
+        print_monitor({"status": "error", "error_type": "timeout", "message": f"TMDB API timeout: {e}"})
     except requests.exceptions.HTTPError as e:
         if e.response.status_code == 429:  # Rate limit error
-            print(f"WARNING: TMDB rate limit hit: {e}")
+            print_monitor({"status": "error", "error_type": "rate_limit", "message": f"TMDB rate limit hit: {e}"})
         else:
-            print(f"WARNING: TMDB API HTTP error: {e}")
+            print_monitor({"status": "error", "error_type": "http_error", "message": f"TMDB API HTTP error: {e}"})
     except requests.exceptions.ConnectionError as e:
-        print(f"WARNING: TMDB API connection error: {e}")
+        print_monitor({"status": "error", "error_type": "connection", "message": f"TMDB API connection error: {e}"})
     except requests.exceptions.RequestException as e:
-        print(f"WARNING: TMDB API network error: {e}")
+        print_monitor({"status": "error", "error_type": "network", "message": f"TMDB API network error: {e}"})
     except KeyboardInterrupt:
-        print("\nERROR: User interrupted the request")
+        print_error("User interrupted the request")
         raise
     except Exception as e:
-        print(f"WARNING: TMDB API call failed: {e}")
+        print_monitor({"status": "error", "error_type": "unknown", "message": f"TMDB API call failed: {e}"})
     
     # Retry with exponential backoff
-    print(f"Attempting to retry (max {max_retries} retries)...")
+    print_monitor({"status": "retrying", "max_retries": max_retries, "message": f"Attempting to retry (max {max_retries} retries)..."})
     
     for attempt in range(1, max_retries + 1):
         try:
-            print(f"Retry attempt {attempt}/{max_retries}...")
             current_delay = retry_delay * (2 ** (attempt - 1))  # Exponential backoff
-            print(f"Waiting {current_delay} seconds before retry...")
+            print_monitor({"status": "retry_attempt", "attempt": attempt, "max_retries": max_retries, "wait_time": current_delay, "message": f"Retry attempt {attempt}/{max_retries}, waiting {current_delay}s..."})
             time.sleep(current_delay)
             
             # Re-check rate limit
             _rate_limiter.wait_if_needed()
             
-            print("Retrying API call...")
             result = api_function(*args, **kwargs)
-            # Log result type for debugging
-            if result is not None:
-                logger.debug(f"TMDB API retry returned: type={type(result)}, len={len(result) if hasattr(result, '__len__') else 'N/A'}")
-                if isinstance(result, list) and result:
-                    logger.debug(f"First item type: {type(result[0])}")
             return result
         except Exception as retry_error:
             if attempt < max_retries:
-                print(f"Attempt {attempt} failed: {retry_error}")
+                print_monitor({"status": "retry_failed", "attempt": attempt, "error": str(retry_error), "message": f"Attempt {attempt} failed: {retry_error}"})
             else:
-                print(f"ERROR: All retry attempts failed!")
-                print(f"Details: {retry_error}")
+                print_error("All retry attempts failed!")
+                print_error(f"Details: {retry_error}")
                 raise
 
 
@@ -318,11 +305,11 @@ def search_movies(query: str, user_id: int, year: Optional[int] = None) -> List[
     # Check user's search cache
     cached = _get_user_search_cache(user_id, cache_key)
     if cached:
-        print(f"Cache hit for movie search: {query}")
+        print_info(f"TMDB: Cache hit for movie search: {query}")
         return cached
     
     # Make API call
-    print(f"Searching TMDB for movies: {query}")
+    print_info(f"TMDB: Searching for movies: {query}")
     if year:
         results = safe_tmdb_call(movie_service.search, query, year=year)
     else:
@@ -330,7 +317,7 @@ def search_movies(query: str, user_id: int, year: Optional[int] = None) -> List[
     
     # Validate results (TMDB returns AsObj, not plain list)
     if results is None:
-        logger.warning(f"TMDB returned None for movie search: {query}")
+        print_warning(f"TMDB: Returned None for movie search: {query}")
         return []
     
     # Format results
@@ -339,7 +326,7 @@ def search_movies(query: str, user_id: int, year: Optional[int] = None) -> List[
         for movie in results:
             # Skip invalid items (e.g., strings, None)
             if not hasattr(movie, 'id'):
-                logger.warning(f"Skipping invalid movie result: {type(movie)} - {movie}")
+                print_warning(f"TMDB: Skipping invalid movie result: {type(movie)}")
                 continue
                 
             try:
@@ -354,10 +341,10 @@ def search_movies(query: str, user_id: int, year: Optional[int] = None) -> List[
                     'vote_average': movie.vote_average,
                 })
             except AttributeError as e:
-                logger.warning(f"Error formatting movie result: {e}. Movie: {movie}")
+                print_warning(f"TMDB: Error formatting movie result: {e}")
                 continue
     except TypeError as e:
-        logger.warning(f"Error iterating movie results: {e}")
+        print_warning(f"TMDB: Error iterating movie results: {e}")
         return []
     
     # Cache results
@@ -392,11 +379,11 @@ def search_tv(query: str, user_id: int, year: Optional[int] = None) -> List[Dict
     # Check user's search cache
     cached = _get_user_search_cache(user_id, cache_key)
     if cached:
-        print(f"Cache hit for TV search: {query}")
+        print_info(f"TMDB: Cache hit for TV search: {query}")
         return cached
     
     # Make API call
-    print(f"Searching TMDB for TV shows: {query}")
+    print_info(f"TMDB: Searching for TV shows: {query}")
     if year:
         results = safe_tmdb_call(tv_service.search, query, first_air_date_year=year)
     else:
@@ -404,7 +391,7 @@ def search_tv(query: str, user_id: int, year: Optional[int] = None) -> List[Dict
     
     # Validate results (TMDB returns AsObj, not plain list)
     if results is None:
-        logger.warning(f"TMDB returned None for TV search: {query}")
+        print_warning(f"TMDB: Returned None for TV search: {query}")
         return []
     
     # Format results
@@ -413,7 +400,7 @@ def search_tv(query: str, user_id: int, year: Optional[int] = None) -> List[Dict
         for show in results:
             # Skip invalid items (e.g., strings, None)
             if not hasattr(show, 'id'):
-                logger.warning(f"Skipping invalid TV result: {type(show)} - {show}")
+                print_warning(f"TMDB: Skipping invalid TV result: {type(show)}")
                 continue
                 
             try:
@@ -428,10 +415,10 @@ def search_tv(query: str, user_id: int, year: Optional[int] = None) -> List[Dict
                     'vote_average': show.vote_average,
                 })
             except AttributeError as e:
-                logger.warning(f"Error formatting TV result: {e}. Show: {show}")
+                print_warning(f"TMDB: Error formatting TV result: {e}")
                 continue
     except TypeError as e:
-        logger.warning(f"Error iterating TV results: {e}")
+        print_warning(f"TMDB: Error iterating TV results: {e}")
         return []
     
     # Cache results
@@ -466,11 +453,11 @@ def get_movie_details(tmdb_id: int) -> Dict[str, Any]:
     # Check global cache (used for requested media)
     cached = _get_global_cache(cache_key, cache_type='request')
     if cached:
-        print(f"Cache hit for movie details: {tmdb_id}")
+        print_info(f"TMDB: Cache hit for movie details: {tmdb_id}")
         return cached
     
     # Make API call
-    print(f"Fetching movie details from TMDB: {tmdb_id}")
+    print_info(f"TMDB: Fetching movie details: {tmdb_id}")
     movie = safe_tmdb_call(movie_service.details, tmdb_id)
     
     # Format result
@@ -521,11 +508,11 @@ def get_tv_details(tmdb_id: int) -> Dict[str, Any]:
     # Check global cache (used for requested media)
     cached = _get_global_cache(cache_key, cache_type='request')
     if cached:
-        print(f"Cache hit for TV details: {tmdb_id}")
+        print_info(f"TMDB: Cache hit for TV details: {tmdb_id}")
         return cached
     
     # Make API call
-    print(f"Fetching TV details from TMDB: {tmdb_id}")
+    print_info(f"TMDB: Fetching TV details: {tmdb_id}")
     show = safe_tmdb_call(tv_service.details, tmdb_id)
     
     # Format result
@@ -578,11 +565,11 @@ def get_trending(media_type: str = 'all', time_window: str = 'week', page: int =
     # Check global cache (24h TTL)
     cached = _get_global_cache(cache_key, cache_type='trending')
     if cached:
-        print(f"Cache hit for trending: {media_type}/{time_window} page {page}")
+        print_info(f"TMDB: Cache hit for trending: {media_type}/{time_window} page {page}")
         return cached
     
     # Make API call based on media type and time window
-    print(f"Fetching trending from TMDB: {media_type}/{time_window} page {page}")
+    print_info(f"TMDB: Fetching trending: {media_type}/{time_window} page {page}")
     
     if media_type == 'movie':
         if time_window == 'week':
@@ -654,7 +641,7 @@ def refresh_trending_cache():
     This should be called by a CRON job in main.py to keep trending data fresh.
     Fetches both week and day trending for all, movies, and TV shows.
     """
-    print("Refreshing trending cache...")
+    print_info("TMDB: Refreshing trending cache...")
     
     try:
         # Refresh all trending combinations
@@ -665,9 +652,9 @@ def refresh_trending_cache():
         get_trending('tv', 'week')
         get_trending('tv', 'day')
         
-        print("Trending cache refreshed successfully")
+        print_success("TMDB: Trending cache refreshed successfully")
     except Exception as e:
-        print(f"ERROR: Failed to refresh trending cache: {e}")
+        print_error(f"Failed to refresh trending cache: {e}")
 
 
 def clear_user_search_cache(user_id: int):
@@ -680,7 +667,7 @@ def clear_user_search_cache(user_id: int):
     TODO: Implement with database in Phase 1
     - DELETE FROM tmdb_cache WHERE user_id = ? AND cache_type = 'search'
     """
-    print(f"Clearing search cache for user {user_id}...")
+    print_info(f"TMDB: Clearing search cache for user {user_id}...")
     # Placeholder - will be implemented with database
     pass
 
@@ -692,7 +679,7 @@ def clear_trending_cache():
     TODO: Implement with database in Phase 1
     - DELETE FROM tmdb_cache WHERE user_id IS NULL AND cache_type = 'trending'
     """
-    print("Clearing trending cache...")
+    print_info("TMDB: Clearing trending cache...")
     # Placeholder - will be implemented with database
     pass
 
@@ -710,7 +697,7 @@ def clear_request_cache(request_id: int):
     - Get tmdb_id from media_requests table
     - DELETE FROM tmdb_cache WHERE cache_key = 'movie_{tmdb_id}' OR 'tv_{tmdb_id}'
     """
-    print(f"Clearing request cache for request {request_id}...")
+    print_info(f"TMDB: Clearing request cache for request {request_id}...")
     # Placeholder - will be implemented with database
     pass
 
@@ -724,7 +711,7 @@ def clear_expired_cache():
     TODO: Implement with database in Phase 1
     - DELETE FROM tmdb_cache WHERE cached_at < (now - 24 hours) AND cache_type = 'trending'
     """
-    print("Clearing expired cache entries...")
+    print_info("TMDB: Clearing expired cache entries...")
     # Placeholder - will be implemented with database
     pass
 
@@ -741,20 +728,20 @@ def validate_api_key() -> bool:
         True if API key is valid, False otherwise
     """
     try:
-        print("Validating TMDB API key...")
+        print_info("TMDB: Validating API key...")
         # Make a simple test request
         safe_tmdb_call(movie_service.popular)
-        print("TMDB API key validated successfully")
+        print_success("TMDB: API key validated successfully")
         return True
     except Exception as e:
-        print(f"ERROR: TMDB API key validation failed: {e}")
+        print_error(f"TMDB API key validation failed: {e}")
         return False
 
 
 # Validate API key on module import
 if __name__ != '__main__':
     if not validate_api_key():
-        print("WARNING: TMDB API key validation failed. Some features may not work.")
+        print_warning("TMDB: API key validation failed. Some features may not work.")
 
 
 # ============================================================================
@@ -789,7 +776,7 @@ def get_season_episode_count(
     """
     from src.models import TMDBSeasonCache
     
-    logger.info(f"Getting episode count for TMDB {tmdb_id} Season {season_number}")
+    print_info(f"TMDB: Getting episode count for show {tmdb_id} Season {season_number}")
     
     # Check cache first
     cache_entry = db_session.query(TMDBSeasonCache).filter(
@@ -802,30 +789,28 @@ def get_season_episode_count(
     if cache_entry:
         # Completed seasons are cached indefinitely
         if cache_entry.season_status == 'completed':
-            logger.debug(f"Cache hit (completed season): {cache_entry.episode_count} episodes")
             return cache_entry.episode_count
         
         # Ongoing seasons: check if cache is still valid
         if cache_entry.season_status == 'ongoing':
             if cache_entry.next_episode_air_date and cache_entry.next_episode_air_date > current_date:
-                logger.debug(f"Cache hit (ongoing season): {cache_entry.episode_count} episodes")
                 return cache_entry.episode_count
             else:
-                logger.debug("Ongoing season cache expired, refreshing...")
+                print_info("TMDB: Ongoing season cache expired, refreshing...")
     
     # Fetch from TMDB API
     try:
-        logger.info(f"Fetching season info from TMDB API...")
+        print_info("TMDB: Fetching season info from API...")
         
         # Use tmdbv3api Season service to get season details
         season_details = safe_tmdb_call(season_service.details, tmdb_id, season_number)
         
         if not season_details or not hasattr(season_details, 'episodes'):
-            logger.error(f"Failed to get season details from TMDB")
+            print_error("TMDB: Failed to get season details")
             return None
         
         episode_count = len(season_details.episodes)
-        logger.info(f"TMDB API returned {episode_count} episodes")
+        print_info(f"TMDB: Found {episode_count} episodes")
         
         # Determine season status and next air date
         season_status = 'completed'
@@ -844,9 +829,9 @@ def get_season_episode_count(
                         if next_episode_air_date is None or air_date < next_episode_air_date:
                             next_episode_air_date = air_date
                 except Exception as e:
-                    logger.warning(f"Failed to parse air date: {episode.air_date} - {e}")
+                    print_warning(f"TMDB: Failed to parse air date: {episode.air_date} - {e}")
         
-        logger.info(f"Season status: {season_status}, next air date: {next_episode_air_date}")
+        print_info(f"TMDB: Season status: {season_status}, next air date: {next_episode_air_date}")
         
         # Update or create cache entry
         if cache_entry:
@@ -865,12 +850,12 @@ def get_season_episode_count(
             db_session.add(cache_entry)
         
         db_session.commit()
-        logger.info(f"Cached episode count: {episode_count} (status: {season_status})")
+        print_success(f"TMDB: Cached episode count: {episode_count} (status: {season_status})")
         
         return episode_count
     
     except Exception as e:
-        logger.error(f"Failed to fetch season info from TMDB: {e}")
+        print_error(f"Failed to fetch season info from TMDB: {e}")
         db_session.rollback()
         return None
 
@@ -902,7 +887,7 @@ def refresh_ongoing_seasons_cache(db_session) -> int:
     from src.models import TMDBSeasonCache
     
     current_date = date.today()
-    logger.info(f"Refreshing ongoing season caches (date: {current_date})")
+    print_info(f"TMDB: Refreshing ongoing season caches (date: {current_date})")
     
     try:
         # Find ongoing seasons that need refresh
@@ -911,7 +896,7 @@ def refresh_ongoing_seasons_cache(db_session) -> int:
             TMDBSeasonCache.next_episode_air_date <= current_date
         ).all()
         
-        logger.info(f"Found {len(expired_entries)} ongoing seasons to refresh")
+        print_info(f"TMDB: Found {len(expired_entries)} ongoing seasons to refresh")
         
         refreshed_count = 0
         for entry in expired_entries:
@@ -924,7 +909,7 @@ def refresh_ongoing_seasons_cache(db_session) -> int:
                 )
                 
                 if not season_details or not hasattr(season_details, 'episodes'):
-                    logger.warning(f"Failed to refresh TMDB {entry.tmdb_id} S{entry.season_number}")
+                    print_warning(f"TMDB: Failed to refresh show {entry.tmdb_id} S{entry.season_number}")
                     continue
                 
                 episode_count = len(season_details.episodes)
@@ -942,7 +927,7 @@ def refresh_ongoing_seasons_cache(db_session) -> int:
                                 if next_episode_air_date is None or air_date < next_episode_air_date:
                                     next_episode_air_date = air_date
                         except Exception as e:
-                            logger.warning(f"Failed to parse air date: {e}")
+                            print_warning(f"TMDB: Failed to parse air date: {e}")
                 
                 # Update cache
                 entry.episode_count = episode_count
@@ -950,21 +935,21 @@ def refresh_ongoing_seasons_cache(db_session) -> int:
                 entry.next_episode_air_date = next_episode_air_date
                 entry.updated_at = datetime.utcnow()
                 
-                logger.info(f"Refreshed TMDB {entry.tmdb_id} S{entry.season_number}: "
+                print_info(f"TMDB: Refreshed show {entry.tmdb_id} S{entry.season_number}: "
                           f"{episode_count} episodes, status: {season_status}")
                 
                 refreshed_count += 1
                 
             except Exception as e:
-                logger.error(f"Failed to refresh cache entry: {e}")
+                print_error(f"Failed to refresh cache entry: {e}")
                 continue
         
         db_session.commit()
-        logger.info(f"Successfully refreshed {refreshed_count} ongoing season caches")
+        print_success(f"TMDB: Successfully refreshed {refreshed_count} ongoing season caches")
         return refreshed_count
     
     except Exception as e:
-        logger.error(f"Failed to refresh ongoing seasons: {e}")
+        print_error(f"Failed to refresh ongoing seasons: {e}")
         db_session.rollback()
         return 0
 
@@ -1052,13 +1037,13 @@ async def download_image(path: str, size: str = 'w500', cache_type: str = 'trend
                     with open(metadata_file, 'w') as f:
                         json.dump(metadata, f, indent=2)
             except Exception as lock_error:
-                logger.warning(f"Failed to update metadata for {filename}: {lock_error}")
+                print_warning(f"TMDB: Failed to update metadata for {filename}: {lock_error}")
             
-            logger.info(f"Downloaded TMDB image: {filename}")
+            print_success(f"TMDB: Downloaded image: {filename}")
             return f"{size}/{filename}"
             
     except Exception as e:
-        logger.error(f"Failed to download image {path} after 300s timeout: {e}")
+        print_error(f"Failed to download image {path} after 300s timeout: {e}")
         return None
 
 
@@ -1092,7 +1077,7 @@ async def get_or_fetch_trending(media_type: str, time_window: str = 'week', page
             ).first()
             
             if cache_entry:
-                logger.info(f"Cache hit for trending {media_type} page {page}")
+                print_info(f"TMDB: Cache hit for trending {media_type} page {page}")
                 cached_data = json.loads(cache_entry.data_json)
                 
                 # Extract results from cached data
@@ -1114,7 +1099,7 @@ async def get_or_fetch_trending(media_type: str, time_window: str = 'week', page
             db.close()
     
     # Fetch from TMDB API
-    logger.info(f"Fetching trending {media_type} from TMDB API page {page}")
+    print_info(f"TMDB: Fetching trending {media_type} from API page {page}")
     trending_data = get_trending(media_type, time_window, page)
     
     # Extract results list from the dict
@@ -1166,7 +1151,7 @@ async def get_or_fetch_trending(media_type: str, time_window: str = 'week', page
             db.add(cache_entry)
         
         db.commit()
-        logger.info(f"Cached trending {media_type} page {page} until {expires_at}")
+        print_success(f"TMDB: Cached trending {media_type} page {page} until {expires_at}")
     finally:
         db.close()
     
@@ -1205,7 +1190,7 @@ async def get_or_fetch_search(query: str, user_id: int, page: int = 1, media_typ
         ).first()
         
         if cache_entry:
-            logger.info(f"Cache hit for search: {query} (page {page})")
+            print_info(f"TMDB: Cache hit for search: {query} (page {page})")
             cached_results = json.loads(cache_entry.data_json)
             
             # Verify image files exist and download if missing
@@ -1234,7 +1219,7 @@ async def get_or_fetch_search(query: str, user_id: int, page: int = 1, media_typ
         db.close()
     
     # Fetch from TMDB API
-    logger.info(f"Searching TMDB for: {query} (page {page})")
+    print_info(f"TMDB: Searching for: {query} (page {page})")
     
     if media_type == 'multi':
         # Search both movies and TV shows
@@ -1318,7 +1303,7 @@ async def get_or_fetch_search(query: str, user_id: int, page: int = 1, media_typ
         db.add(search_cache)
         
         db.commit()
-        logger.info(f"Cached search '{query}' until {expires_at}")
+        print_success(f"TMDB: Cached search '{query}' until {expires_at}")
     finally:
         db.close()
     

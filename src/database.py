@@ -8,6 +8,8 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, Session
 
+from src.console import print_info, print_success
+
 # Database URL from environment or default to SQLite file
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./plex_manager.db")
 
@@ -56,9 +58,9 @@ def init_db():
     """
     from src.models import Base  # Import here to ensure models are registered
     
-    print("Initializing database...")
+    print_info("Initializing database...", prefix="Database")
     Base.metadata.create_all(bind=engine)
-    print("Database initialized successfully")
+    print_success("Database initialized successfully")
 
 
 def begin_immediate_transaction(session: Session):

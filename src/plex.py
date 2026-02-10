@@ -5,9 +5,7 @@ import os
 import sys
 import time
 import re
-import logging
-
-logger = logging.getLogger(__name__)
+from src.console import print_error, print_warning, print_info, print_debug
 
 # Load Plex credentials from environment variables
 PLEX_URL = os.getenv('PLEX_URL', '')
@@ -15,17 +13,17 @@ PLEX_TOKEN = os.getenv('PLEX_TOKEN', '')
 
 # Check if configuration is set
 if not PLEX_URL or not PLEX_TOKEN:
-    print("ERROR: Plex configuration not set up!")
-    print("Please set PLEX_URL and PLEX_TOKEN in your .env file")
-    print("See docs/SETUP.md for detailed instructions.")
+    print_error("Plex configuration not set up!", timestamp=False)
+    print_error("Please set PLEX_URL and PLEX_TOKEN in your .env file", timestamp=False)
+    print_error("See docs/SETUP.md for detailed instructions.", timestamp=False)
     sys.exit(1)
 
 # Login to Plex server
 try:
     plex = PlexServer(PLEX_URL, PLEX_TOKEN, timeout=15)
 except Exception as e:
-    print("ERROR: Could not connect to Plex server!")
-    print(f"Details: {e}")
+    print_error("Could not connect to Plex server!", timestamp=False)
+    print_error(f"Details: {e}", timestamp=False)
     sys.exit(2)
 
 # Helper functions
@@ -50,40 +48,40 @@ def is_plex_server_owner(user_plex_token: str) -> bool:
     """
     try:
         # Create MyPlexAccount instance for the user
-        logger.debug(f"Checking server ownership for user token")
+        print_debug(f"[PLEX] Checking server ownership for user token")
         account = MyPlexAccount(token=user_plex_token)
         
         # Get the configured server's machine identifier
         server_machine_id = plex.machineIdentifier
-        logger.debug(f"Configured server machine ID: {server_machine_id}")
+        print_debug(f"[PLEX] Configured server machine ID: {server_machine_id}")
         
         # Query all resources (servers) the user has access to
         resources = account.resources()
-        logger.debug(f"User has access to {len(resources)} resources")
+        print_debug(f"[PLEX] User has access to {len(resources)} resources")
         
         # Check each resource for ownership
         for resource in resources:
             # Only check Plex Media Server resources
             if resource.product == 'Plex Media Server':
-                logger.debug(f"Checking server: {resource.name} (ID: {resource.clientIdentifier}, Owned: {resource.owned})")
+                print_debug(f"[PLEX] Checking server: {resource.name} (ID: {resource.clientIdentifier}, Owned: {resource.owned})")
                 
                 # Check if this is our configured server and if user owns it
                 if resource.clientIdentifier == server_machine_id:
                     if resource.owned:
-                        logger.info(f"✓ User {account.username} owns the configured Plex server")
+                        print_info(f"User {account.username} owns the configured Plex server", prefix="PLEX")
                         return True
                     else:
-                        logger.info(f"✗ User {account.username} has access but does not own the configured Plex server")
+                        print_info(f"User {account.username} has access but does not own the configured Plex server", prefix="PLEX")
                         return False
         
         # Server not found in user's resources
-        logger.warning(f"Configured server (ID: {server_machine_id}) not found in user's accessible resources")
+        print_warning(f"[PLEX] Configured server (ID: {server_machine_id}) not found in user's accessible resources")
         return False
         
     except Exception as e:
         # Log error but don't block authentication
-        logger.error(f"Error checking server ownership: {e}")
-        logger.error(f"Defaulting to non-admin permissions")
+        print_error(f"[PLEX] Error checking server ownership: {e}")
+        print_error(f"[PLEX] Defaulting to non-admin permissions")
         return False
 
 def safe_api_call(api_function, *args, max_retries=3, retry_delay=2, **kwargs):
@@ -98,25 +96,25 @@ def safe_api_call(api_function, *args, max_retries=3, retry_delay=2, **kwargs):
     try:
         return api_function(*args, **kwargs)
     except Exception as e:
-        print(f"WARNING: Plex API call failed: {e}")
-        print(f"Attempting to reconnect and retry (max {max_retries} retries)...")
+        print_warning(f"[PLEX] Plex API call failed: {e}")
+        print_info(f"Attempting to reconnect and retry (max {max_retries} retries)...", prefix="PLEX")
         
         # Retry with reconnection
         for attempt in range(1, max_retries + 1):
             try:
-                print(f"Reconnection attempt {attempt}/{max_retries}...")
+                print_info(f"Reconnection attempt {attempt}/{max_retries}...", prefix="PLEX")
                 plex = PlexServer(PLEX_URL, PLEX_TOKEN, timeout=15)
 
-                print("Retrying API call...")
+                print_info("Retrying API call...", prefix="PLEX")
                 return api_function(*args, **kwargs)
             except Exception as retry_error:
                 if attempt < max_retries:
-                    print(f"Attempt {attempt} failed: {retry_error}")
-                    print(f"Waiting {retry_delay} seconds before next attempt...")
+                    print_warning(f"[PLEX] Attempt {attempt} failed: {retry_error}")
+                    print_info(f"Waiting {retry_delay} seconds before next attempt...", prefix="PLEX")
                     time.sleep(retry_delay)
                 else:
-                    print(f"ERROR: All reconnection attempts failed!")
-                    print(f"Details: {retry_error}")
+                    print_error(f"[PLEX] All reconnection attempts failed!")
+                    print_error(f"[PLEX] Details: {retry_error}")
                     sys.exit(2)
 
 def get_plex_libraries():
@@ -209,7 +207,7 @@ def check_media_exists(
         {"exists": True, "partial": True, "missing_episodes": [7,8,9,10], "plex_title": "Breaking Bad"}
     """
     normalized_title = _normalize_title(tmdb_title)
-    logger.info(f"Checking Plex for: {tmdb_title} ({year}) - {media_type}")
+    print_info(f"Checking Plex for: {tmdb_title} ({year}) - {media_type}", prefix="PLEX")
     
     try:
         libraries = get_plex_libraries()
@@ -242,7 +240,7 @@ def check_media_exists(
                         pass
                 
                 # Match found!
-                logger.info(f"Found match in Plex: {item.title} ({item_year})")
+                print_info(f"Found match in Plex: {item.title} ({item_year})", prefix="PLEX")
                 
                 # Get artwork URLs from Plex
                 plex_poster_url = None
@@ -253,7 +251,7 @@ def check_media_exists(
                     if hasattr(item, 'art') and item.art:
                         plex_backdrop_url = plex.url(item.art, includeToken=True)
                 except Exception as art_error:
-                    logger.warning(f"Failed to get Plex artwork URLs: {art_error}")
+                    print_warning(f"[PLEX] Failed to get Plex artwork URLs: {art_error}")
                 
                 # For movies, simple existence check
                 if media_type == 'movie':
@@ -314,7 +312,7 @@ def check_media_exists(
                             }
                     
                     except Exception as e:
-                        logger.warning(f"Failed to check TV season: {e}")
+                        print_warning(f"[PLEX] Failed to check TV season: {e}")
                         # Season doesn't exist or error occurred
                         return {
                             "exists": False,
@@ -330,14 +328,14 @@ def check_media_exists(
                 }
         
         # No match found
-        logger.info(f"Media not found in Plex: {tmdb_title}")
+        print_info(f"Media not found in Plex: {tmdb_title}", prefix="PLEX")
         return {
             "exists": False,
             "missing_episodes": episodes if episodes else []
         }
     
     except Exception as e:
-        logger.error(f"Error checking Plex media: {e}")
+        print_error(f"[PLEX] Error checking Plex media: {e}")
         # On error, assume doesn't exist to allow request to proceed
         return {
             "exists": False,

@@ -9,6 +9,8 @@ from pathlib import Path
 import uvicorn
 from dotenv import load_dotenv
 
+from src.console import print_info, print_success, print_warning, print_error
+
 # Load environment variables from .env file
 load_dotenv()
 
@@ -48,9 +50,9 @@ def check_configuration() -> bool:
     missing_vars = [var for var in required_env_vars if not os.getenv(var)]
     
     if missing_vars:
-        print(f"\nIncomplete configuration. Missing {len(missing_vars)} variable(s):")
+        print_error(f"Incomplete configuration. Missing {len(missing_vars)} variable(s):", prefix="CONFIG")
         for var in missing_vars:
-            print(f"  - {var}")
+            print_info(f"  - {var}", prefix="CONFIG")
         return False
     
     return True
@@ -60,14 +62,14 @@ def run_setup_wizard():
     """Launch the interactive setup wizard."""
     from src.setup_wizard import run_setup_wizard
     
-    print("\n" + "="*70)
-    print("Plex Manager is not configured yet.")
-    print("="*70)
+    print_info("="*70, prefix="SETUP", timestamp=False)
+    print_info("Plex Manager is not configured yet.", prefix="SETUP", timestamp=False)
+    print_info("="*70, prefix="SETUP", timestamp=False)
     
     success = run_setup_wizard()
     
     if not success:
-        print("\nSetup was not completed. Please run the setup wizard again.")
+        print_warning("Setup was not completed. Please run the setup wizard again.", prefix="SETUP")
         sys.exit(1)
     
     # Reload environment variables after setup
@@ -86,12 +88,12 @@ if __name__ == "__main__":
     
     # Verify configuration is now complete
     if not check_configuration():
-        print("\nERROR: Configuration is still incomplete after setup.")
+        print_error("Configuration is still incomplete after setup.", prefix="CONFIG")
         sys.exit(1)
     
-    print("-" * 40)
-    print("Starting Plex Manager...")
-    print("-" * 40)
+    print_info("-" * 40, prefix="STARTUP", timestamp=False)
+    print_info("Starting Plex Manager...", prefix="STARTUP")
+    print_info("-" * 40, prefix="STARTUP", timestamp=False)
     
     # Launch FastAPI application
     uvicorn.run(

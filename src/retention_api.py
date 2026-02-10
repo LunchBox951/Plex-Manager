@@ -23,6 +23,7 @@ from src.retention import (
     get_grace_period_days
 )
 from src.audit import log_action
+from src.console import print_info
 
 
 router = APIRouter(prefix="/api", tags=["retention"])
@@ -146,8 +147,8 @@ async def create_media_request(
             db, request_data.tmdb_id, request_data.media_type
         )
         if new_effective != effective_retention:
-            print(f"Retention conflict resolved for {request_data.title}: "
-                  f"{effective_retention} -> {new_effective}")
+            print_info(f"Retention conflict resolved for {request_data.title}: "
+                  f"{effective_retention} -> {new_effective}", prefix="Retention")
     
     return media_request
 
@@ -307,7 +308,7 @@ async def create_available_request(
     db.commit()
     db.refresh(media_request)
     
-    print(f"Created available request for {title} (User: {current_user.username})")
+    print_info(f"Created available request for {title} (User: {current_user.username})", prefix="Request")
     
     return media_request.to_dict()
 
@@ -362,7 +363,7 @@ async def update_retention_type(
     
     db.refresh(media_request)
     
-    print(f"Retention updated for {media_request.title}: {old_retention} -> {update_data.retention_type}")
+    print_info(f"Retention updated for {media_request.title}: {old_retention} -> {update_data.retention_type}", prefix="Retention")
     
     return media_request
 

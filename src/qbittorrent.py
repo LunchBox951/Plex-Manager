@@ -10,6 +10,8 @@ import requests
 from typing import Dict, List, Optional, Any
 from urllib.parse import urlparse, parse_qs
 
+from src.console import print_info, print_success, print_error, print_warning
+
 
 class QBittorrentClient:
     """Client for interacting with qBittorrent Web API."""
@@ -45,13 +47,13 @@ class QBittorrentClient:
             
             if response.status_code == 200 and response.text == "Ok.":
                 self._authenticated = True
-                print(f"Successfully authenticated with qBittorrent at {self.base_url}")
+                print_success(f"Successfully authenticated with qBittorrent at {self.base_url}")
                 return True
             else:
-                print(f"Failed to authenticate with qBittorrent: {response.text}")
+                print_error(f"Failed to authenticate with qBittorrent: {response.text}")
                 return False
         except Exception as e:
-            print(f"Error during qBittorrent authentication: {e}")
+            print_error(f"Error during qBittorrent authentication: {e}")
             return False
     
     def _ensure_authenticated(self):
@@ -84,7 +86,7 @@ class QBittorrentClient:
                 
                 # Check if we need to re-authenticate
                 if response.status_code == 403:
-                    print("Session expired, re-authenticating...")
+                    print_warning("Session expired, re-authenticating...")
                     self._authenticated = False
                     self._ensure_authenticated()
                     continue
@@ -92,14 +94,14 @@ class QBittorrentClient:
                 return response
                 
             except requests.exceptions.RequestException as e:
-                print(f"API call failed (attempt {attempt + 1}/{max_retries}): {e}")
+                print_warning(f"API call failed (attempt {attempt + 1}/{max_retries}): {e}")
                 
                 if attempt < max_retries - 1:
                     sleep_time = retry_delay * (2 ** attempt)  # Exponential backoff
-                    print(f"Retrying in {sleep_time} seconds...")
+                    print_info(f"Retrying in {sleep_time} seconds...")
                     time.sleep(sleep_time)
                 else:
-                    print("Max retries reached, giving up")
+                    print_error("Max retries reached, giving up")
                     return None
         
         return None
@@ -135,7 +137,7 @@ class QBittorrentClient:
             return info_hash
             
         except Exception as e:
-            print(f"Error extracting info hash: {e}")
+            print_error(f"Error extracting info hash: {e}")
             return None
     
     def add_magnet(self, magnet_link: str, save_path: str = None, 
@@ -166,10 +168,10 @@ class QBittorrentClient:
         if response and response.status_code == 200:
             if response.text == "Ok.":
                 link_type = "torrent URL" if magnet_link.startswith('http') else "magnet link"
-                print(f"Successfully added {link_type} to qBittorrent")
+                print_success(f"Successfully added {link_type} to qBittorrent")
                 return True
             else:
-                print(f"Failed to add torrent: {response.text}")
+                print_error(f"Failed to add torrent: {response.text}")
                 return False
         
         return False

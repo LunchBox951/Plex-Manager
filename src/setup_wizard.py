@@ -14,17 +14,7 @@ import requests
 from plexapi.server import PlexServer
 from qbittorrentapi import Client as QBittorrentClient
 
-
-# ANSI color codes for pretty terminal output
-class Colors:
-    HEADER = '\033[95m'
-    BLUE = '\033[94m'
-    CYAN = '\033[96m'
-    GREEN = '\033[92m'
-    YELLOW = '\033[93m'
-    RED = '\033[91m'
-    ENDC = '\033[0m'
-    BOLD = '\033[1m'
+from src.console import print_info, print_success, print_warning, print_error, Colors
 
 
 def print_header(text: str):
@@ -32,26 +22,6 @@ def print_header(text: str):
     print(f"\n{Colors.BOLD}{Colors.HEADER}{'='*70}{Colors.ENDC}")
     print(f"{Colors.BOLD}{Colors.HEADER}{text}{Colors.ENDC}")
     print(f"{Colors.BOLD}{Colors.HEADER}{'='*70}{Colors.ENDC}\n")
-
-
-def print_success(text: str):
-    """Print a success message."""
-    print(f"{Colors.GREEN}✓ {text}{Colors.ENDC}")
-
-
-def print_error(text: str):
-    """Print an error message."""
-    print(f"{Colors.RED}✗ {text}{Colors.ENDC}")
-
-
-def print_warning(text: str):
-    """Print a warning message."""
-    print(f"{Colors.YELLOW}⚠ {text}{Colors.ENDC}")
-
-
-def print_info(text: str):
-    """Print an info message."""
-    print(f"{Colors.CYAN}ℹ {text}{Colors.ENDC}")
 
 
 def parse_env_file(env_path: Path) -> Dict[str, str]:
@@ -106,7 +76,7 @@ def ensure_application_directories():
             # Create .gitkeep file
             gitkeep = path / '.gitkeep'
             gitkeep.touch()
-            print_success(f"Created directory: {dir_path}")
+            print_success(f"Created directory: {dir_path}", timestamp=False)
 
 
 def validate_plex_connection(url: str, token: str) -> Tuple[bool, str]:
@@ -276,41 +246,41 @@ def prompt_with_validation(
 def setup_secrets(existing_config: Dict[str, str]) -> Dict[str, str]:
     """Setup or validate secret keys."""
     print_header("Step 1: Security Keys")
-    print("Generating cryptographic keys for secure operation...")
+    print_info("Generating cryptographic keys for secure operation...", timestamp=False)
     
     config = {}
     
     # SECRET_KEY
     if 'SECRET_KEY' in existing_config and existing_config['SECRET_KEY']:
-        print_success(f"Using existing SECRET_KEY")
+        print_success(f"Using existing SECRET_KEY", timestamp=False)
         config['SECRET_KEY'] = existing_config['SECRET_KEY']
     else:
         config['SECRET_KEY'] = generate_secret_key()
-        print_success("Generated new SECRET_KEY")
+        print_success("Generated new SECRET_KEY", timestamp=False)
     
     # JWT_SECRET_KEY
     if 'JWT_SECRET_KEY' in existing_config and existing_config['JWT_SECRET_KEY']:
-        print_success(f"Using existing JWT_SECRET_KEY")
+        print_success(f"Using existing JWT_SECRET_KEY", timestamp=False)
         config['JWT_SECRET_KEY'] = existing_config['JWT_SECRET_KEY']
     else:
         config['JWT_SECRET_KEY'] = generate_secret_key()
-        print_success("Generated new JWT_SECRET_KEY")
+        print_success("Generated new JWT_SECRET_KEY", timestamp=False)
     
     # PLEX_CLIENT_ID
     if 'PLEX_CLIENT_ID' in existing_config and existing_config['PLEX_CLIENT_ID']:
-        print_success(f"Using existing PLEX_CLIENT_ID")
+        print_success(f"Using existing PLEX_CLIENT_ID", timestamp=False)
         config['PLEX_CLIENT_ID'] = existing_config['PLEX_CLIENT_ID']
     else:
         config['PLEX_CLIENT_ID'] = generate_client_id()
-        print_success("Generated new PLEX_CLIENT_ID")
+        print_success("Generated new PLEX_CLIENT_ID", timestamp=False)
     
     # ENCRYPTION_KEY
     if 'ENCRYPTION_KEY' in existing_config and existing_config['ENCRYPTION_KEY']:
-        print_success(f"Using existing ENCRYPTION_KEY")
+        print_success(f"Using existing ENCRYPTION_KEY", timestamp=False)
         config['ENCRYPTION_KEY'] = existing_config['ENCRYPTION_KEY']
     else:
         config['ENCRYPTION_KEY'] = generate_encryption_key()
-        print_success("Generated new ENCRYPTION_KEY")
+        print_success("Generated new ENCRYPTION_KEY", timestamp=False)
     
     return config
 
@@ -326,7 +296,7 @@ def setup_plex(existing_config: Dict[str, str]) -> Optional[Dict[str, str]]:
     if 'PLEX_URL' in existing_config:
         if prompt_yes_no(f"Keep existing Plex URL ({default_url})?", default=True):
             config['PLEX_URL'] = default_url
-            print_success(f"Using existing Plex URL: {default_url}")
+            print_success(f"Using existing Plex URL: {default_url}", timestamp=False)
         else:
             default_url = 'http://localhost:32400'
     
@@ -348,7 +318,7 @@ def setup_plex(existing_config: Dict[str, str]) -> Optional[Dict[str, str]]:
         config['PLEX_TOKEN'] = prompt_with_default("Enter Plex authentication token", default_token)
     
     # Validate Plex connection
-    print("\nValidating Plex connection...")
+    print_info("Validating Plex connection...", timestamp=False)
     
     def validate_plex(dummy):
         return validate_plex_connection(config['PLEX_URL'], config['PLEX_TOKEN'])
@@ -378,7 +348,7 @@ def setup_tmdb(existing_config: Dict[str, str]) -> Optional[Dict[str, str]]:
     
     default_key = existing_config.get('TMDB_API_KEY', '')
     if default_key and prompt_yes_no(f"Keep existing TMDB API key?", default=True):
-        print("\nValidating TMDB API key...")
+        print_info("Validating TMDB API key...", timestamp=False)
         success, message = validate_tmdb_api_key(default_key)
         if success:
             print_success(message)
@@ -427,7 +397,7 @@ def setup_prowlarr(existing_config: Dict[str, str]) -> Optional[Dict[str, str]]:
     default_key = existing_config.get('PROWLARR_API_KEY', '')
     if default_key and prompt_yes_no(f"Keep existing Prowlarr API key?", default=True):
         # Validate existing key
-        print("\nValidating Prowlarr connection...")
+        print_info("Validating Prowlarr connection...", timestamp=False)
         success, message = validate_prowlarr_connection(config['PROWLARR_URL'], default_key)
         if success:
             print_success(message)
@@ -488,7 +458,7 @@ def setup_qbittorrent(existing_config: Dict[str, str]) -> Optional[Dict[str, str
     
     if has_existing_password and prompt_yes_no(f"Keep existing qBittorrent password?", default=True):
         # Validate existing credentials
-        print("\nValidating qBittorrent connection...")
+        print_info("Validating qBittorrent connection...", timestamp=False)
         success, message = validate_qbittorrent_connection(
             config['QBITTORRENT_URL'],
             config['QBITTORRENT_USERNAME'],
@@ -531,8 +501,8 @@ def setup_paths(existing_config: Dict[str, str]) -> Optional[Dict[str, str]]:
     print_info("Configure them in qBittorrent and Plex before continuing.")
     
     # DOWNLOADS_PATH
-    print("\n" + Colors.BOLD + "Downloads Path" + Colors.ENDC)
-    print_info("Where qBittorrent saves completed downloads")
+    print_info(f"\n{Colors.BOLD}Downloads Path{Colors.ENDC}", timestamp=False)
+    print_info("Where qBittorrent saves completed downloads", timestamp=False)
     
     default_downloads = existing_config.get('DOWNLOADS_PATH', '')
     if default_downloads and prompt_yes_no(f"Keep existing downloads path ({default_downloads})?", default=True):
@@ -560,8 +530,8 @@ def setup_paths(existing_config: Dict[str, str]) -> Optional[Dict[str, str]]:
         config['DOWNLOADS_PATH'] = downloads_path
     
     # MOVIES_PATH
-    print("\n" + Colors.BOLD + "Movies Library Path" + Colors.ENDC)
-    print_info("Where Plex reads movie files")
+    print_info(f"\n{Colors.BOLD}Movies Library Path{Colors.ENDC}", timestamp=False)
+    print_info("Where Plex reads movie files", timestamp=False)
     
     default_movies = existing_config.get('MOVIES_PATH', '')
     if default_movies and prompt_yes_no(f"Keep existing movies path ({default_movies})?", default=True):
@@ -589,8 +559,8 @@ def setup_paths(existing_config: Dict[str, str]) -> Optional[Dict[str, str]]:
         config['MOVIES_PATH'] = movies_path
     
     # TV_PATH
-    print("\n" + Colors.BOLD + "TV Shows Library Path" + Colors.ENDC)
-    print_info("Where Plex reads TV show files")
+    print_info(f"\n{Colors.BOLD}TV Shows Library Path{Colors.ENDC}", timestamp=False)
+    print_info("Where Plex reads TV show files", timestamp=False)
     
     default_tv = existing_config.get('TV_PATH', '')
     if default_tv and prompt_yes_no(f"Keep existing TV path ({default_tv})?", default=True):
@@ -690,13 +660,12 @@ def run_setup_wizard() -> bool:
     Returns True if setup was completed successfully, False otherwise.
     """
     print_header("Plex Manager Setup Wizard")
-    print("Welcome! This wizard will help you configure Plex Manager.")
-    print("We'll guide you through each step and validate your configuration.\n")
+    print_info("Welcome! This wizard will help you configure Plex Manager.", timestamp=False)
+    print_info("We'll guide you through each step and validate your configuration.", timestamp=False)
     
     # Create application directories
-    print("Creating application directories...")
+    print_info("Creating application directories...", timestamp=False)
     ensure_application_directories()
-    print()
     
     # Parse existing .env if it exists
     env_path = Path('.env')
@@ -755,7 +724,7 @@ def run_setup_wizard() -> bool:
     
     # Write .env file
     print_header("Step 7: Saving Configuration")
-    print("Writing configuration to .env file...")
+    print_info("Writing configuration to .env file...", timestamp=False)
     
     try:
         write_env_file(all_config, env_path)
@@ -766,12 +735,12 @@ def run_setup_wizard() -> bool:
     
     # Success!
     print_header("Setup Complete!")
-    print_success("Plex Manager is now configured and ready to use!")
-    print("\nNext steps:")
-    print("  1. Start Plex Manager: python main.py")
-    print("  2. Open your browser to: http://localhost:8000")
-    print("  3. Sign in with your Plex account")
-    print("\nFor help and documentation, see: docs/SETUP.md\n")
+    print_success("Plex Manager is now configured and ready to use!", timestamp=False)
+    print_info("Next steps:", timestamp=False)
+    print_info("  1. Start Plex Manager: python main.py", timestamp=False)
+    print_info("  2. Open your browser to: http://localhost:8000", timestamp=False)
+    print_info("  3. Sign in with your Plex account", timestamp=False)
+    print_info("For help and documentation, see: docs/SETUP.md", timestamp=False)
     
     return True
 

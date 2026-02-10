@@ -5,14 +5,12 @@ Implements resolution detection, seeder/size ratio scoring, season pack bonuses,
 
 import re
 import json
-import logging
 from typing import List, Set, Optional, Dict
 from dataclasses import dataclass
 
 from src.prowlarr import TorrentResult
 from src.qbittorrent import QBittorrentClient
-
-logger = logging.getLogger(__name__)
+from src.console import print_debug as debug, print_info as info, print_warning as warning, print_error as error
 
 # Resolution multipliers for scoring
 RESOLUTION_MULTIPLIERS = {
@@ -106,7 +104,7 @@ def is_blocked_release(title: str) -> bool:
     """
     for pattern in BLOCKED_PATTERNS:
         if re.search(pattern, title, re.IGNORECASE):
-            logger.debug(f"Blocked release detected: {title} (pattern: {pattern})")
+            debug(f"[SCORING] Blocked release detected: {title} (pattern: {pattern})")
             return True
     return False
 
@@ -152,15 +150,15 @@ def is_multi_season_pack(title: str) -> bool:
                     season1 = int(match.group(1))
                     season2 = int(match.group(2))
                     if season2 > season1:  # Verify second season is greater
-                        logger.debug(f"Multi-season pack detected: {title} (S{season1:02d}-S{season2:02d})")
+                        debug(f"[SCORING] Multi-season pack detected: {title} (S{season1:02d}-S{season2:02d})")
                         return True
                 except (IndexError, ValueError):
                     # For "Complete Series", "All Seasons" patterns without groups
-                    logger.debug(f"Multi-season pack detected: {title}")
+                    debug(f"[SCORING] Multi-season pack detected: {title}")
                     return True
             else:
                 # Pattern matched without capture groups (Complete Series, All Seasons)
-                logger.debug(f"Multi-season pack detected: {title}")
+                debug(f"[SCORING] Multi-season pack detected: {title}")
                 return True
     
     return False
@@ -186,7 +184,7 @@ def parse_episode_count_from_title(title: str) -> Optional[int]:
         if match:
             try:
                 count = int(match.group(1))
-                logger.debug(f"Parsed episode count from title: {count} (pattern: {pattern})")
+                debug(f"[SCORING] Parsed episode count from title: {count} (pattern: {pattern})")
                 return count
             except (IndexError, ValueError):
                 continue
@@ -214,7 +212,7 @@ def get_episode_count_from_tmdb(tmdb_id: int, season_number: int, db_session) ->
     ).first()
     
     if cache_entry:
-        logger.debug(f"Found TMDB cache: {cache_entry.episode_count} episodes")
+        debug(f"[SCORING] Found TMDB cache: {cache_entry.episode_count} episodes")
         return cache_entry.episode_count
     
     return None
@@ -241,13 +239,13 @@ def get_episode_count_from_magnet(magnet_link: str, qb_client: QBittorrentClient
         # Extract info hash for tracking
         info_hash = QBittorrentClient.extract_info_hash(magnet_link)
         if not info_hash:
-            logger.warning("Could not extract info hash from magnet")
+            warning("[SCORING] Could not extract info hash from magnet")
             return None
         
         # Add torrent in paused state
-        logger.debug(f"Adding magnet temporarily for metadata: {info_hash[:8]}...")
+        debug(f"[SCORING] Adding magnet temporarily for metadata: {info_hash[:8]}...")
         if not qb_client.add_magnet(magnet_link, paused=True):
-            logger.warning("Failed to add magnet to qBittorrent")
+            warning("[SCORING] Failed to add magnet to qBittorrent")
             return None
         
         # Wait for metadata to download
@@ -256,7 +254,7 @@ def get_episode_count_from_magnet(magnet_link: str, qb_client: QBittorrentClient
         # Get file list
         files = qb_client.get_torrent_files(info_hash)
         if not files:
-            logger.warning("No files found in torrent metadata")
+            warning("[SCORING] No files found in torrent metadata")
             qb_client.delete_torrent(info_hash, delete_files=False)
             return None
         
@@ -273,11 +271,11 @@ def get_episode_count_from_magnet(magnet_link: str, qb_client: QBittorrentClient
         qb_client.delete_torrent(info_hash, delete_files=False)
         
         count = len(episode_numbers) if episode_numbers else None
-        logger.debug(f"Detected {count} episodes from magnet metadata")
+        debug(f"[SCORING] Detected {count} episodes from magnet metadata")
         return count
         
     except Exception as e:
-        logger.error(f"Failed to get episode count from magnet: {e}")
+        error(f"[SCORING] Failed to get episode count from magnet: {e}")
         return None
 
 
@@ -310,24 +308,24 @@ def get_episode_count(
     # Tier 1: Title parsing
     count = parse_episode_count_from_title(torrent.title)
     if count:
-        logger.debug(f"Episode count from title: {count}")
+        debug(f"[SCORING] Episode count from title: {count}")
         return count
     
     # Tier 2: TMDB cache
     if tmdb_id and season_number and db_session:
         count = get_episode_count_from_tmdb(tmdb_id, season_number, db_session)
         if count:
-            logger.debug(f"Episode count from TMDB cache: {count}")
+            debug(f"[SCORING] Episode count from TMDB cache: {count}")
             return count
     
     # Tier 3: Magnet metadata (only if explicitly allowed)
     if use_magnet and qb_client:
         count = get_episode_count_from_magnet(torrent.magnet_link, qb_client)
         if count:
-            logger.debug(f"Episode count from magnet: {count}")
+            debug(f"[SCORING] Episode count from magnet: {count}")
             return count
     
-    logger.debug("Could not determine episode count")
+    debug("[SCORING] Could not determine episode count")
     return None
 
 
@@ -439,13 +437,13 @@ def rank_torrents(
     for torrent in torrents:
         # Skip failed torrents
         if torrent.info_hash.lower() in failed_hashes:
-            logger.debug(f"Skipping failed torrent: {torrent.title}")
+            debug(f"[SCORING] Skipping failed torrent: {torrent.title}")
             continue
         
         # Calculate base score
         base_score = calculate_base_score(torrent)
         if base_score == 0.0:
-            logger.debug(f"Torrent filtered out (low score): {torrent.title}")
+            debug(f"[SCORING] Torrent filtered out (low score): {torrent.title}")
             continue
         
         final_score = base_score
@@ -495,7 +493,7 @@ def rank_torrents(
     if qb_client and season_number is not None:
         for i, scored in enumerate(scored_torrents[:3]):
             if scored.is_season_pack and not scored.episode_count:
-                logger.info(f"Refining top {i+1} torrent with magnet metadata...")
+                info(f"[SCORING] Refining top {i+1} torrent with magnet metadata...")
                 episode_count = get_episode_count(
                     scored.torrent, tmdb_id, season_number, db_session, qb_client, use_magnet=True
                 )
@@ -516,7 +514,7 @@ def rank_torrents(
         # Re-sort after refinement
         scored_torrents.sort(key=lambda x: x.final_score, reverse=True)
     
-    logger.info(f"Ranked {len(scored_torrents)} torrents (filtered {len(torrents) - len(scored_torrents)})")
+    info(f"[SCORING] Ranked {len(scored_torrents)} torrents (filtered {len(torrents) - len(scored_torrents)})")
     return scored_torrents
 
 
@@ -539,8 +537,8 @@ def select_best_torrent(
     
     best = scored_torrents[0]
     if best.final_score < min_score:
-        logger.warning(f"Best torrent score ({best.final_score:.2f}) below minimum ({min_score})")
+        warning(f"[SCORING] Best torrent score ({best.final_score:.2f}) below minimum ({min_score})")
         return None
     
-    logger.info(f"Selected torrent: {best.torrent.title} (score: {best.final_score:.2f})")
+    info(f"[SCORING] Selected torrent: {best.torrent.title} (score: {best.final_score:.2f})")
     return best

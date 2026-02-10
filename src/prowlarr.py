@@ -5,16 +5,15 @@ Provides search capabilities across 500+ indexers with CloudFlare bypass support
 
 import os
 import time
-import logging
 from dataclasses import dataclass
 from datetime import datetime
 from typing import List, Optional
 import requests
 from dotenv import load_dotenv
 
-load_dotenv()
+from src.console import print_info, print_warning, print_error, print_debug
 
-logger = logging.getLogger(__name__)
+load_dotenv()
 
 # Prowlarr configuration
 # API Key location: Prowlarr → Settings → General → Security → API Key
@@ -70,7 +69,7 @@ class ProwlarrClient:
             'Content-Type': 'application/json'
         })
         
-        logger.info(f"Initialized Prowlarr client for {self.base_url}")
+        print_info(f"Initialized Prowlarr client for {self.base_url}", prefix="PROWLARR")
     
     def _make_request(self, endpoint: str, params: dict = None, max_retries: int = 3) -> dict:
         """
@@ -91,21 +90,21 @@ class ProwlarrClient:
         
         for attempt in range(max_retries):
             try:
-                logger.debug(f"Prowlarr API request: GET {url} params={params}")
+                print_debug(f"Prowlarr API request: GET {url} params={params}")
                 response = self.session.get(url, params=params, timeout=30)
                 response.raise_for_status()
                 return response.json()
                 
             except requests.RequestException as e:
-                logger.warning(f"Prowlarr request failed (attempt {attempt + 1}/{max_retries}): {e}")
+                print_warning(f"Prowlarr request failed (attempt {attempt + 1}/{max_retries}): {e}")
                 
                 if attempt < max_retries - 1:
                     # Exponential backoff
                     sleep_time = 2 ** attempt
-                    logger.debug(f"Retrying in {sleep_time}s...")
+                    print_debug(f"Retrying in {sleep_time}s...")
                     time.sleep(sleep_time)
                 else:
-                    logger.error(f"Prowlarr request failed after {max_retries} attempts")
+                    print_error(f"Prowlarr request failed after {max_retries} attempts")
                     raise
     
     def search(self, query: str, category: int) -> List[TorrentResult]:
@@ -125,7 +124,7 @@ class ProwlarrClient:
             >>> for torrent in results:
             ...     print(f"{torrent.title} - {torrent.seeders} seeders")
         """
-        logger.info(f"Searching Prowlarr: query='{query}' category={category}")
+        print_info(f"Searching Prowlarr: query='{query}' category={category}", prefix="PROWLARR")
         
         params = {
             'query': query,
@@ -137,7 +136,7 @@ class ProwlarrClient:
             data = self._make_request('search', params=params)
             
             if not isinstance(data, list):
-                logger.warning(f"Unexpected Prowlarr response format: {type(data)}")
+                print_warning(f"Unexpected Prowlarr response format: {type(data)}")
                 return []
             
             results = []
@@ -146,7 +145,7 @@ class ProwlarrClient:
                     # Extract magnet link
                     magnet_link = item.get('magnetUrl') or item.get('downloadUrl')
                     if not magnet_link:
-                        logger.debug(f"Skipping result without magnet/download URL: {item.get('title')}")
+                        print_debug(f"Skipping result without magnet/download URL: {item.get('title')}")
                         continue
                     
                     # Parse publish date if available
@@ -155,7 +154,7 @@ class ProwlarrClient:
                         try:
                             publish_date = datetime.fromisoformat(item['publishDate'].replace('Z', '+00:00'))
                         except Exception as e:
-                            logger.debug(f"Failed to parse publish date: {e}")
+                            print_debug(f"Failed to parse publish date: {e}")
                     
                     result = TorrentResult(
                         title=item.get('title', 'Unknown'),
@@ -171,14 +170,14 @@ class ProwlarrClient:
                     results.append(result)
                     
                 except Exception as e:
-                    logger.warning(f"Failed to parse Prowlarr result: {e}")
+                    print_warning(f"Failed to parse Prowlarr result: {e}")
                     continue
             
-            logger.info(f"Found {len(results)} torrents from Prowlarr")
+            print_info(f"Found {len(results)} torrents from Prowlarr", prefix="PROWLARR")
             return results
             
         except requests.RequestException as e:
-            logger.error(f"Prowlarr search failed: {e}")
+            print_error(f"Prowlarr search failed: {e}")
             return []
     
     def test_connection(self) -> bool:
@@ -190,10 +189,10 @@ class ProwlarrClient:
         """
         try:
             data = self._make_request('system/status', max_retries=1)
-            logger.info(f"Prowlarr connection successful: version {data.get('version')}")
+            print_info(f"Prowlarr connection successful: version {data.get('version')}", prefix="PROWLARR")
             return True
         except Exception as e:
-            logger.error(f"Prowlarr connection test failed: {e}")
+            print_error(f"Prowlarr connection test failed: {e}")
             return False
 
 

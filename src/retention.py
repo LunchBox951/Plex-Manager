@@ -11,6 +11,7 @@ from sqlalchemy import and_, or_
 from src.models import MediaRequest, EpisodeRetention, Settings, Download
 from src.plex import get_plex_server
 from src.TMDB import get_tv_details, get_season_episode_count
+from src.console import print_error
 
 
 # Retention type hierarchy (most permissive to least permissive)
@@ -122,7 +123,7 @@ def track_watch_status(db: Session, plex_server, media_request: MediaRequest) ->
         return False
         
     except Exception as e:
-        print(f"Error tracking watch status for request {media_request.id}: {e}")
+        print_error(f"Error tracking watch status for request {media_request.id}: {e}")
         return False
 
 
@@ -162,7 +163,7 @@ def track_episode_watch_status(db: Session, plex_server, episode_retention: Epis
         return False
         
     except Exception as e:
-        print(f"Error tracking episode watch status for {episode_retention.id}: {e}")
+        print_error(f"Error tracking episode watch status for {episode_retention.id}: {e}")
         return False
 
 
@@ -287,7 +288,7 @@ def schedule_episode_deletion(db: Session, media_request: MediaRequest,
                     db.commit()
                     return True
         except Exception as e:
-            print(f"Error checking next episode for scheduling: {e}")
+            print_error(f"Error checking next episode for scheduling: {e}")
     
     return False
 

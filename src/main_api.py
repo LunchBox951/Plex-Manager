@@ -4,7 +4,6 @@ Handles routing, middleware, and application lifecycle.
 """
 
 import os
-import logging
 import datetime
 import asyncio
 from contextlib import asynccontextmanager
@@ -25,14 +24,7 @@ from src.downloads import router as downloads_router
 from src.retention_api import router as retention_router
 from src.download_monitor import start_monitor, stop_monitor
 from src.models import User, MediaRequest, Download
-
-# Configure logging to show INFO and above
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s [%(levelname)s] [%(name)s] %(message)s',
-    datefmt='%Y-%m-%d %H:%M:%S'
-)
-logger = logging.getLogger(__name__)
+from src.console import print_info, print_success, print_warning, print_error, print_debug
 
 
 # Validate required environment variables
@@ -78,10 +70,10 @@ def validate_environment():
     if missing_paths:
         raise ValueError(f"Required paths do not exist:\n" + "\n".join(missing_paths))
     
-    print("✓ All environment variables validated")
-    print(f"✓ Downloads path: {os.getenv('DOWNLOADS_PATH')}")
-    print(f"✓ Movies path: {os.getenv('MOVIES_PATH')}")
-    print(f"✓ TV path: {os.getenv('TV_PATH')}")
+    print_success("All environment variables validated", prefix="CONFIG")
+    print_info(f"Downloads path: {os.getenv('DOWNLOADS_PATH')}", prefix="CONFIG")
+    print_info(f"Movies path: {os.getenv('MOVIES_PATH')}", prefix="CONFIG")
+    print_info(f"TV path: {os.getenv('TV_PATH')}", prefix="CONFIG")
 
 
 # Application lifespan context manager
@@ -89,7 +81,7 @@ def validate_environment():
 async def lifespan(app: FastAPI):
     """Manage application startup and shutdown."""
     # Startup
-    print("Starting Plex Manager API...")
+    print_info("Starting Plex Manager API...", prefix="STARTUP")
     
     # Validate environment
     validate_environment()
@@ -100,14 +92,14 @@ async def lifespan(app: FastAPI):
     # Start download monitor
     start_monitor()
     
-    print("API ready!")
+    print_success("API ready!", prefix="STARTUP")
     
     yield
     
     # Shutdown
-    print("Shutting down Plex Manager API...")
+    print_info("Shutting down Plex Manager API...", prefix="SHUTDOWN")
     stop_monitor()
-    print("Shutdown complete")
+    print_success("Shutdown complete", prefix="SHUTDOWN")
 
 
 # Initialize FastAPI app with lifespan
@@ -210,7 +202,7 @@ async def home_page(request: Request, db: Session = Depends(get_db)):
             {"request": request, "user": user, "current_page": "home"}
         )
     except Exception as e:
-        print(f"Homepage access failed: {e}")
+        print_error(f"Homepage access failed: {e}", prefix="AUTH")
         import traceback
         traceback.print_exc()
         return RedirectResponse(url="/", status_code=302)
@@ -226,8 +218,6 @@ async def api_trending_movies(
     """Get trending movies from TMDB with Plex library status and pagination."""
     from src.TMDB import get_or_fetch_trending
     from src.plex import check_media_exists
-    import logging
-    logger = logging.getLogger(__name__)
     
     try:
         # Get trending data with cached images
@@ -245,7 +235,7 @@ async def api_trending_movies(
                 item['in_library'] = plex_check.get('exists', False)
                 item['plex_title'] = plex_check.get('plex_title', '')
         except Exception as e:
-            logger.warning(f"Failed to check Plex library: {e}")
+            print_warning(f"Failed to check Plex library: {e}", prefix="PLEX")
             # Continue without library status
             for item in results:
                 item['in_library'] = False
@@ -259,7 +249,7 @@ async def api_trending_movies(
         }
         
     except Exception as e:
-        logger.error(f"Failed to fetch trending movies: {e}")
+        print_error(f"Failed to fetch trending movies: {e}", prefix="TMDB")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -273,8 +263,6 @@ async def api_trending_tv(
     """Get trending TV shows from TMDB with Plex library status and pagination."""
     from src.TMDB import get_or_fetch_trending
     from src.plex import check_media_exists
-    import logging
-    logger = logging.getLogger(__name__)
     
     try:
         # Get trending data with cached images
@@ -292,7 +280,7 @@ async def api_trending_tv(
                 item['in_library'] = plex_check.get('exists', False)
                 item['plex_title'] = plex_check.get('plex_title', '')
         except Exception as e:
-            logger.warning(f"Failed to check Plex library: {e}")
+            print_warning(f"Failed to check Plex library: {e}", prefix="PLEX")
             # Continue without library status
             for item in results:
                 item['in_library'] = False
@@ -306,7 +294,7 @@ async def api_trending_tv(
         }
         
     except Exception as e:
-        logger.error(f"Failed to fetch trending TV: {e}")
+        print_error(f"Failed to fetch trending TV: {e}", prefix="TMDB")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -320,8 +308,6 @@ async def api_search(
     """Search TMDB for movies and TV shows with Plex library status."""
     from src.TMDB import get_or_fetch_search
     from src.plex import check_media_exists
-    import logging
-    logger = logging.getLogger(__name__)
     
     if not query or len(query.strip()) == 0:
         return {"movies": {"results": [], "page": 1, "total_pages": 0, "total_results": 0},
@@ -350,7 +336,7 @@ async def api_search(
                 item['plex_title'] = plex_check.get('plex_title', '')
                     
         except Exception as e:
-            logger.warning(f"Failed to check Plex library: {e}")
+            print_warning(f"Failed to check Plex library: {e}", prefix="PLEX")
             # Continue without library status
             for item in results['movies']['results'] + results['tv']['results']:
                 item['in_library'] = False
@@ -358,7 +344,7 @@ async def api_search(
         return results
         
     except Exception as e:
-        logger.error(f"Search failed for query '{query}': {e}")
+        print_error(f"Search failed for query '{query}': {e}", prefix="TMDB")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -411,10 +397,10 @@ async def api_request_status(
                                     total_eta += eta
                                     active_downloads += 1
                         except Exception as e:
-                            print(f"Error fetching torrent info for {download.torrent_hash}: {e}")
+                            print_warning(f"Error fetching torrent info for {download.torrent_hash}: {e}", prefix="QBIT")
                             continue
             except Exception as e:
-                print(f"Error connecting to qBittorrent: {e}")
+                print_error(f"Error connecting to qBittorrent: {e}", prefix="QBIT")
     
     # Calculate average ETA if we have active downloads
     avg_eta = (total_eta / active_downloads) if active_downloads > 0 else 0
@@ -434,7 +420,7 @@ async def api_request_status(
         response["eta"] = int(avg_eta)  # seconds
     
     # Log the response for debugging
-    print(f"[STATUS API] Request {request_id} | Status: {media_request.status} | Progress: {round(total_progress, 2)}% | Downloads: {len(downloads)}")
+    print_debug(f"Request {request_id} | Status: {media_request.status} | Progress: {round(total_progress, 2)}% | Downloads: {len(downloads)}", prefix="STATUS")
     
     return response
 
@@ -482,7 +468,7 @@ async def media_details_page(
                 media_data['backdrop_url'] = plex_check['plex_backdrop_url']
             
         except Exception as e:
-            print(f"Error checking Plex: {e}")
+            print_error(f"Error checking Plex: {e}", prefix="PLEX")
             media_data['in_library'] = False
         
         # Render template
@@ -501,7 +487,7 @@ async def media_details_page(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Media details page failed: {e}")
+        print_error(f"Media details page failed: {e}", prefix="API")
         import traceback
         traceback.print_exc()
         return RedirectResponse(url="/home", status_code=302)
@@ -521,8 +507,6 @@ async def get_media_status(
     from src.models import MediaRequest, Download
     from src.plex import check_media_exists
     from src.TMDB import get_movie_details, get_tv_details
-    import logging
-    logger = logging.getLogger(__name__)
     
     try:
         # Get media title from TMDB
@@ -599,7 +583,7 @@ async def get_media_status(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Failed to get media status: {e}")
+        print_error(f"Failed to get media status: {e}", prefix="API")
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
@@ -644,12 +628,10 @@ async def get_season_episodes(
     """
     from src.TMDB import safe_tmdb_call, season_service, download_image, get_tv_details
     from src.plex import check_media_exists
-    import logging
-    logger = logging.getLogger(__name__)
     
     try:
         # Get season details directly from TMDB (includes all episode data)
-        logger.info(f"Fetching season {season_number} details for TMDB ID {tmdb_id}")
+        print_info(f"Fetching season {season_number} details for TMDB ID {tmdb_id}", prefix="TMDB")
         # Use Season service with details method
         season_details = safe_tmdb_call(season_service.details, tmdb_id, season_number)
         
@@ -677,9 +659,9 @@ async def get_season_episodes(
                 
                 if plex_result.get('exists') and plex_result.get('existing_episodes'):
                     plex_available_episodes = set(plex_result['existing_episodes'])
-                    logger.info(f"Found {len(plex_available_episodes)} episodes in Plex for S{season_number}")
+                    print_info(f"Found {len(plex_available_episodes)} episodes in Plex for S{season_number}", prefix="PLEX")
             except Exception as plex_error:
-                logger.warning(f"Error checking Plex availability: {plex_error}")
+                print_warning(f"Error checking Plex availability: {plex_error}", prefix="PLEX")
         
         # Extract episode information and trigger background downloads
         episodes = []
@@ -712,7 +694,7 @@ async def get_season_episodes(
         }
         
     except Exception as e:
-        logger.error(f"Failed to get season episodes: {e}")
+        print_error(f"Failed to get season episodes: {e}", prefix="API")
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
@@ -808,7 +790,7 @@ async def api_calendar_episodes(
         _, last_day = monthrange(end_year, end_month)
         end_date = date(end_year, end_month, last_day)
         
-        logger.info(f"[CALENDAR API] User {current_user.username} - Fetching episodes from {start_date} to {end_date}")
+        print_info(f"User {current_user.username} - Fetching episodes from {start_date} to {end_date}", prefix="CALENDAR")
         
         # Get all tracked TV shows for this user
         tracked_requests = db.query(MediaRequest).filter(
@@ -826,7 +808,7 @@ async def api_calendar_episodes(
                 "requested_month": f"{year}-{month:02d}"
             }
         
-        logger.info(f"[CALENDAR API] Found {len(tracked_requests)} tracked shows")
+        print_info(f"Found {len(tracked_requests)} tracked shows", prefix="CALENDAR")
         
         calendar_episodes = []
         
@@ -903,13 +885,13 @@ async def api_calendar_episodes(
                         })
             
             except Exception as e:
-                logger.error(f"[CALENDAR API] Error processing {media_request.title}: {e}")
+                print_error(f"Error processing {media_request.title}: {e}", prefix="CALENDAR")
                 continue
         
         # Sort by air date
         calendar_episodes.sort(key=lambda x: x['air_date'])
         
-        logger.info(f"[CALENDAR API] Returning {len(calendar_episodes)} episodes")
+        print_info(f"Returning {len(calendar_episodes)} episodes", prefix="CALENDAR")
         
         return {
             "episodes": calendar_episodes,
@@ -919,7 +901,7 @@ async def api_calendar_episodes(
         }
         
     except Exception as e:
-        logger.error(f"[CALENDAR API] Error: {e}")
+        print_error(f"Error: {e}", prefix="CALENDAR")
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
@@ -981,7 +963,7 @@ async def get_disk_usage(
         
         for name, path in paths.items():
             if not path or not os.path.exists(path):
-                logger.warning(f"Path '{name}' not found: {path}")
+                print_warning(f"Path '{name}' not found: {path}", prefix="DISK")
                 continue
             
             try:
@@ -1021,7 +1003,7 @@ async def get_disk_usage(
                     partitions_seen[partition] = partition_info
                     disk_info.append(partition_info)
             except Exception as path_error:
-                logger.error(f"Error getting disk usage for {name} ({path}): {path_error}")
+                print_error(f"Error getting disk usage for {name} ({path}): {path_error}", prefix="DISK")
                 continue
         
         return {
@@ -1030,7 +1012,7 @@ async def get_disk_usage(
         }
         
     except Exception as e:
-        logger.error(f"Failed to get disk usage: {e}")
+        print_error(f"Failed to get disk usage: {e}", prefix="DISK")
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
@@ -1113,7 +1095,7 @@ async def get_transfer_stats(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Failed to get transfer stats: {e}")
+        print_error(f"Failed to get transfer stats: {e}", prefix="QBIT")
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
