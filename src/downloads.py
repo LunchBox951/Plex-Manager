@@ -1211,9 +1211,6 @@ async def _download_torrent(
         
         # Helper function to validate torrent title matches the requested show
         def title_matches(torrent_title: str, expected_title: str) -> bool:
-            """Check if torrent title contains the expected show/movie name."""
-        # Helper function to validate torrent title matches the requested show
-        def title_matches(torrent_title: str, expected_title: str) -> bool:
             """Check if torrent title matches the expected show/movie name."""
             import re
             
@@ -1248,9 +1245,14 @@ async def _download_torrent(
             
             return match_ratio >= 0.8 and extra_words <= 3
         
-        # Try up to 15 different torrents with progressive retry for each
+        # Try top 20% of results with minimum 15
         # Don't count torrents without info_hash toward the limit
-        max_download_attempts = 15
+        max_download_attempts = max(int(len(scored_torrents) * 0.2), 15)
+
+        # If there are fewer scored torrents than the max attempts, adjust the limit
+        if len(scored_torrents) < max_download_attempts:
+            max_download_attempts = len(scored_torrents)
+
         actual_attempts = 0
         torrent_index = 0
         
