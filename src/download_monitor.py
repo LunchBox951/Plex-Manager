@@ -644,15 +644,39 @@ def monitor_downloads():
                     on_failure(download, db, f"qBittorrent error state: {qb_state}")
                     continue
                 
-                # Check if download just completed
-                if download.status == 'downloading' and download.progress >= 99.9:
-                    print_monitor(f"ID {download.id} | DOWNLOAD COMPLETE", data={
-                        "download_id": download.id,
-                        "progress": round(download.progress, 1),
-                        "state_change": "transitioning_to_seeding"
-                    })
-                    on_download_complete(download, db)
-                    continue
+                # Check if download completed and files need to be copied
+                # Handle both 'downloading' and 'seeding' states to catch completion
+                if download.status in ['downloading', 'seeding']:
+                    # Check for TRUE completion: 100% progress AND qBittorrent state indicates completion
+                    # qBittorrent states that indicate download is complete and only uploading:
+                    # - uploading: actively seeding
+                    # - stalledUP: seeding but no peers requesting
+                    # - pausedUP: paused while seeding
+                    # - queuedUP: queued for seeding
+                    # - checkingUP: checking files after completion
+                    # - forcedUP: forced seeding
+                    is_complete = (
+                        download.progress >= 100.0 and
+                        qb_state in ['uploading', 'stalledUP', 'pausedUP', 'queuedUP', 'checkingUP', 'forcedUP']
+                    )
+                    
+                    # Check if files have been copied (indicated by processed_files_json being set)
+                    files_already_copied = bool(download.processed_files_json)
+                    
+                    if is_complete and not files_already_copied:
+                        print_monitor(f"ID {download.id} | DOWNLOAD COMPLETE - FILES READY FOR COPY", data={
+                            "download_id": download.id,
+                            "progress": round(download.progress, 1),
+                            "qb_state": qb_state,
+                            "state_change": "copying_files_to_library"
+                        })
+                        on_download_complete(download, db)
+                        continue
+                    elif is_complete and files_already_copied:
+                        # Files already copied, ensure status is 'seeding'
+                        if download.status != 'seeding':
+                            download.status = 'seeding'
+                            db.commit()
                 
                 # Check if seeding and ratio met
                 if download.status == 'seeding':
