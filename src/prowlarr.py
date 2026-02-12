@@ -91,7 +91,7 @@ class ProwlarrClient:
         for attempt in range(max_retries):
             try:
                 print_debug(f"Prowlarr API request: GET {url} params={params}")
-                response = self.session.get(url, params=params, timeout=30)
+                response = self.session.get(url, params=params, timeout=300)
                 response.raise_for_status()
                 return response.json()
                 
