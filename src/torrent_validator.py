@@ -7,6 +7,7 @@ import re
 import os
 from typing import Dict, List, Optional, Tuple, Any
 
+from src.utils import normalize_title
 from src.console import print_debug, print_error
 
 
@@ -349,19 +350,15 @@ def format_plex_episode_name(show_title: str, season: int, episode: int,
     Returns:
         Formatted filename (e.g., 'Hazbin Hotel - S01E01 - Overture.mkv')
     """
-    # Clean show title
-    clean_title = show_title.strip()
-    # Remove problematic characters for filenames
-    clean_title = re.sub(r'[<>:"/\\|?*]', '', clean_title)
+    # Clean show title and episode name
+    clean_title = normalize_title(show_title)
     
     # Build filename: "Show Title - S01E01 - Episode Name.mkv"
     filename = f"{clean_title} - S{season:02d}E{episode:02d}"
     
     if episode_name:
         # Clean episode name
-        clean_name = episode_name.strip()
-        # Remove problematic characters for filenames
-        clean_name = re.sub(r'[<>:"/\\|?*]', '', clean_name)
+        clean_name = normalize_title(episode_name)
         filename += f" - {clean_name}"
     
     return filename + ext

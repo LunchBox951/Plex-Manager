@@ -21,6 +21,7 @@ from src.qbittorrent import get_qbittorrent_client, QBittorrentClient
 from src.torrent_validator import validate_torrent_files
 from src.auth import get_current_user
 from src.retention import get_effective_retention
+from src.utils import normalize_title
 from src.console import print_info, print_warning, print_error, print_debug, print_monitor, print_success
 
 
@@ -604,10 +605,11 @@ async def request_media(
         
         # Build search query
         if request.media_type == 'movie':
-            query = f"{title} {year}"
+            query = f"{normalize_title(title)} {year}"
             category = CATEGORY_MOVIES
         else:
-            query = f"{title} S{request.season:02d}" if request.season else title
+            normalized_title = normalize_title(title)
+            query = f"{normalized_title} S{request.season:02d}" if request.season else normalized_title
             category = CATEGORY_TV
         
         torrents = prowlarr.search(query, category)

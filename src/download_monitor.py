@@ -21,6 +21,7 @@ from src.torrent_validator import (
     detect_subtitle_language, is_forced_subtitle,
     format_plex_subtitle_name, format_plex_episode_name
 )
+from src.utils import normalize_title
 from src.console import print_info, print_success, print_warning, print_error, print_debug, print_monitor
 
 
@@ -76,7 +77,7 @@ def build_movie_path(title: str, year: Optional[int], filename: str) -> str:
     movies_path = os.getenv('MOVIES_PATH')
     
     # Clean title for filesystem
-    clean_title = title.strip()
+    clean_title = normalize_title(title)
     
     # Build directory name
     if year:
@@ -111,7 +112,7 @@ def build_tv_path(show_title: str, year: Optional[int], season: int,
     tv_path = os.getenv('TV_PATH')
     
     # Clean title
-    clean_title = show_title.strip()
+    clean_title = normalize_title(show_title)
     
     # Build show directory name
     if year:
