@@ -1180,10 +1180,11 @@ async def _download_torrent(
     
     try:
         if media_type == 'movie':
-            query = f"{title} {year}"
+            query = f"{normalize_title(title)} {year}"
             category = CATEGORY_MOVIES
         else:
-            query = f"{title} S{season:02d}" if season else title
+            normalized_title = normalize_title(title)
+            query = f"{normalized_title} S{season:02d}" if season else normalized_title
             category = CATEGORY_TV
         
         torrents = prowlarr.search(query, category)
@@ -1232,11 +1233,16 @@ async def _download_torrent(
             if not expected_words:
                 return True  # No significant words to match
             
+            # Remove stop words from both strings for contiguous matching
+            remove_stop_words = lambda s: ' '.join([w for w in s.split() if len(w) > 2 and w not in stop_words])
+            torrent_filtered = remove_stop_words(torrent_norm)
+            expected_filtered = remove_stop_words(expected_norm)
+            
             # Check if expected title appears as contiguous sequence in torrent title
             # "Breaking Bad" should appear together, not scattered
             # This handles "Breaking Bad S01" ✓ but rejects "The Bad Guys Breaking In" ✗
             expected_pattern = r'\b' + r'\s+'.join(re.escape(w) for w in expected_words) + r'\b'
-            if re.search(expected_pattern, torrent_norm):
+            if re.search(expected_pattern, torrent_filtered):
                 return True
             
             # Fallback: at least 80% of expected words must be present AND
@@ -1514,10 +1520,11 @@ async def search_media(
         prowlarr = get_prowlarr_client()
         
         if request.media_type == 'movie':
-            query = f"{title} {year}"
+            query = f"{normalize_title(title)} {year}"
             category = CATEGORY_MOVIES
         else:
-            query = f"{title} S{request.season:02d}" if request.season else title
+            normalized_title = normalize_title(title)
+            query = f"{normalized_title} S{request.season:02d}" if request.season else normalized_title
             category = CATEGORY_TV
         
         torrents = prowlarr.search(query, category)

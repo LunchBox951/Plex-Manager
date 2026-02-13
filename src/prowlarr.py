@@ -12,6 +12,7 @@ import requests
 from dotenv import load_dotenv
 
 from src.console import print_info, print_warning, print_error, print_debug
+from src.utils import normalize_title
 
 load_dotenv()
 
@@ -124,6 +125,9 @@ class ProwlarrClient:
             >>> for torrent in results:
             ...     print(f"{torrent.title} - {torrent.seeders} seeders")
         """
+        # Normalize query to remove special characters before searching
+        query = normalize_title(query)
+        
         print_info(f"Searching Prowlarr: query='{query}' category={category}", prefix="PROWLARR")
         
         params = {

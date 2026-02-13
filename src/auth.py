@@ -54,6 +54,9 @@ def set_auth_cookie(response: Response, token: str):
     """Set httpOnly authentication cookie."""
     is_production = os.getenv("ENV", "development") == "production"
     
+    # TODO: Replace HTTPS logic since it doesn't work currently.
+    is_production = "development"
+
     response.set_cookie(
         key="session_token",
         value=token,
