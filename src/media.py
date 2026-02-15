@@ -80,7 +80,6 @@ DAYS_TO_SECONDS = 24 * 60 * 60
 def get_movies_to_delete(movies: list[Movie], days_threshold: int, db: Optional[Session] = None) -> list[Movie]:
     """Returns a list of movies that haven't been viewed in the specified number of days."""
     from src.retention import get_effective_retention
-    from src.models import MediaRequest
     
     to_delete = []
     current_time = time.time()
@@ -92,12 +91,16 @@ def get_movies_to_delete(movies: list[Movie], days_threshold: int, db: Optional[
             try:
                 # Try to find media request by matching title and year
                 # Note: This is a basic match, may need fuzzy matching in production
+                from src.pickle_stores import media_request_store
+                
                 year = getattr(movie.plex_item, 'year', None)
-                media_requests = db.query(MediaRequest).filter(
-                    MediaRequest.media_type == 'movie',
-                    MediaRequest.title.ilike(f"%{movie.title}%"),
-                    MediaRequest.status != 'deleted'
-                ).all()
+                all_requests = media_request_store.list()
+                media_requests = [
+                    r for r in all_requests
+                    if r.media_type == 'movie'
+                    and r.title and movie.title.lower() in r.title.lower()
+                    and r.status != 'deleted'
+                ]
                 
                 # Check if any request protects this movie
                 for request in media_requests:
@@ -130,7 +133,6 @@ def get_movies_to_delete(movies: list[Movie], days_threshold: int, db: Optional[
 def get_episodes_to_delete(tv_shows: list[TVShow], days_threshold: int, db: Optional[Session] = None) -> list[TVShow.Episode]:
     """Returns a list of TV show episodes that haven't been viewed in the specified number of days."""
     from src.retention import get_effective_retention
-    from src.models import MediaRequest, EpisodeRetention
     
     to_delete = []
     current_time = time.time()
@@ -140,11 +142,15 @@ def get_episodes_to_delete(tv_shows: list[TVShow], days_threshold: int, db: Opti
         # Check retention system for this show
         if db:
             try:
-                media_requests = db.query(MediaRequest).filter(
-                    MediaRequest.media_type == 'tv',
-                    MediaRequest.title.ilike(f"%{show.title}%"),
-                    MediaRequest.status != 'deleted'
-                ).all()
+                from src.pickle_stores import media_request_store, episode_retention_store
+                
+                all_requests = media_request_store.list()
+                media_requests = [
+                    r for r in all_requests
+                    if r.media_type == 'tv'
+                    and r.title and show.title.lower() in r.title.lower()
+                    and r.status != 'deleted'
+                ]
                 
                 # Build protection map for episodes
                 protected_episodes = set()
@@ -162,9 +168,7 @@ def get_episodes_to_delete(tv_shows: list[TVShow], days_threshold: int, db: Opti
                         continue  # Skip this entire show
                     
                     # Check for episode-specific overrides
-                    episode_overrides = db.query(EpisodeRetention).filter(
-                        EpisodeRetention.media_request_id == request.id
-                    ).all()
+                    episode_overrides = episode_retention_store.list_by_index('media_request_id', str(request.id))
                     
                     for override in episode_overrides:
                         ep_key = (override.season_number, override.episode_number)

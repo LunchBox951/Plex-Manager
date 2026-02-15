@@ -23,7 +23,7 @@ from src.auth import router as auth_router, get_current_user
 from src.downloads import router as downloads_router
 from src.retention_api import router as retention_router
 from src.download_monitor import start_monitor, stop_monitor
-from src.models import User, MediaRequest, Download
+from src.models import User
 from src.console import print_info, print_success, print_warning, print_error, print_debug
 
 
@@ -86,8 +86,22 @@ async def lifespan(app: FastAPI):
     # Validate environment
     validate_environment()
     
-    # Initialize database
+    # Initialize database (User, Settings, AuditLog only)
     init_db()
+    
+    # Initialize pickle storage directories
+    from src.pickle_storage import PickleStore
+    from src import pickle_stores  # Import to register indexes
+    PickleStore.initialize_directories([
+        'data/downloads',
+        'data/media_requests',
+        'data/season_requests',
+        'data/episode_retentions',
+        'cache/tmdb_cache',
+        'cache/search_cache',
+        'cache/tmdb_season_cache'
+    ])
+    print_success("Pickle stores initialized", prefix="STARTUP")
     
     # Start download monitor
     start_monitor()
@@ -355,11 +369,11 @@ async def api_request_status(
     db: Session = Depends(get_db)
 ):
     """Get status of a media request for polling."""
-    from src.models import MediaRequest, Download
+    from src.pickle_stores import media_request_store, download_store
     from src.qbittorrent import get_qbittorrent_client
     
     # Find request
-    media_request = db.query(MediaRequest).filter(MediaRequest.id == request_id).first()
+    media_request = media_request_store.load(str(request_id))
     
     if not media_request:
         raise HTTPException(status_code=404, detail="Request not found")
@@ -369,10 +383,11 @@ async def api_request_status(
         raise HTTPException(status_code=403, detail="Access denied")
     
     # Calculate progress based on downloads (only active ones)
-    downloads = db.query(Download).filter(
-        Download.media_request_id == request_id,
-        Download.status.in_(['pending', 'downloading', 'seeding'])
-    ).all()
+    all_downloads = download_store.list_by_index('media_request_id', str(request_id))
+    downloads = [
+        d for d in all_downloads
+        if d.status in ['pending', 'downloading', 'seeding']
+    ]
     
     total_progress = 0
     total_speed = 0
@@ -504,7 +519,7 @@ async def get_media_status(
     Get the current status of a media item.
     Returns state (unrequested/pending/downloading/processing/verifying/available) and progress.
     """
-    from src.models import MediaRequest, Download
+    from src.pickle_stores import media_request_store, download_store
     from src.plex import check_media_exists
     from src.TMDB import get_movie_details, get_tv_details
     
@@ -532,10 +547,13 @@ async def get_media_status(
             }
         
         # Check if there's a media request
-        media_request = db.query(MediaRequest).filter(
-            MediaRequest.tmdb_id == tmdb_id,
-            MediaRequest.media_type == media_type
-        ).order_by(MediaRequest.requested_at.desc()).first()
+        index_key = f"{tmdb_id}__{media_type}"
+        requests = media_request_store.list_by_index('tmdb_id__media_type', index_key)
+        
+        # Get the most recent request
+        media_request = None
+        if requests:
+            media_request = max(requests, key=lambda r: r.requested_at)
         
         if not media_request:
             return {
@@ -559,9 +577,7 @@ async def get_media_status(
         # Calculate progress from downloads
         progress = 0
         if media_request.status == "downloading":
-            downloads = db.query(Download).filter(
-                Download.media_request_id == media_request.id
-            ).all()
+            downloads = download_store.list_by_index('media_request_id', str(media_request.id))
             
             if downloads:
                 total_progress = sum(d.progress for d in downloads)
@@ -600,14 +616,21 @@ async def get_media_request_id(
     Get the request ID for a media item if one exists.
     Used to resume polling after page refresh.
     """
-    from src.models import MediaRequest
+    from src.pickle_stores import media_request_store
     
     # Find the most recent request for this media
-    media_request = db.query(MediaRequest).filter(
-        MediaRequest.tmdb_id == tmdb_id,
-        MediaRequest.media_type == media_type,
-        MediaRequest.status.in_(['pending', 'downloading', 'processing'])
-    ).order_by(MediaRequest.requested_at.desc()).first()
+    index_key = f"{tmdb_id}__{media_type}"
+    requests = media_request_store.list_by_index('tmdb_id__media_type', index_key)
+    
+    # Filter for active requests and get the most recent
+    active_requests = [
+        r for r in requests
+        if r.status in ['pending', 'downloading', 'processing']
+    ]
+    
+    media_request = None
+    if active_requests:
+        media_request = max(active_requests, key=lambda r: r.requested_at)
     
     if not media_request:
         return {"request_id": None}
@@ -768,7 +791,6 @@ async def api_calendar_episodes(
     Returns:
         JSON with episodes grouped by air date
     """
-    from src.models import TMDBSeasonCache, SeasonRequest
     from src.TMDB import season_service, safe_tmdb_call
     from datetime import date
     from calendar import monthrange
@@ -793,12 +815,16 @@ async def api_calendar_episodes(
         print_info(f"User {current_user.username} - Fetching episodes from {start_date} to {end_date}", prefix="CALENDAR")
         
         # Get all tracked TV shows for this user
-        tracked_requests = db.query(MediaRequest).filter(
-            MediaRequest.user_id == current_user.id,
-            MediaRequest.media_type == 'tv',
-            MediaRequest.track_upcoming == 1,
-            MediaRequest.status != 'deleted'
-        ).all()
+        from src.pickle_stores import media_request_store, tmdb_season_cache_store, season_request_store, download_store
+        
+        all_requests = media_request_store.list()
+        tracked_requests = [
+            r for r in all_requests
+            if r.user_id == current_user.id
+            and r.media_type == 'tv'
+            and r.track_upcoming == 1
+            and r.status != 'deleted'
+        ]
         
         if not tracked_requests:
             return {
@@ -815,10 +841,12 @@ async def api_calendar_episodes(
         for media_request in tracked_requests:
             try:
                 # Get all ongoing seasons for this show
-                ongoing_seasons = db.query(TMDBSeasonCache).filter(
-                    TMDBSeasonCache.tmdb_id == media_request.tmdb_id,
-                    TMDBSeasonCache.season_status == 'ongoing'
-                ).all()
+                all_season_cache = tmdb_season_cache_store.list()
+                ongoing_seasons = [
+                    s for s in all_season_cache
+                    if s.tmdb_id == media_request.tmdb_id
+                    and s.season_status == 'ongoing'
+                ]
                 
                 if not ongoing_seasons:
                     continue
@@ -851,19 +879,27 @@ async def api_calendar_episodes(
                         episode_num = episode.episode_number
                         
                         # Check if episode is requested (look for SeasonRequest)
-                        season_request = db.query(SeasonRequest).join(Download).filter(
-                            Download.media_request_id == media_request.id,
-                            SeasonRequest.season_number == season_cache.season_number,
-                            SeasonRequest.episode_numbers.like(f'%{episode_num}%')
-                        ).first()
+                        # Get all downloads for this media request
+                        downloads = download_store.list_by_index('media_request_id', str(media_request.id))
+                        
+                        season_request = None
+                        for download in downloads:
+                            # Get season requests for this download
+                            season_requests = season_request_store.list_by_index('download_id', str(download.id))
+                            for sr in season_requests:
+                                if sr.season_number == season_cache.season_number:
+                                    # Check if episode_num is in episode_numbers
+                                    if episode_num in sr.episode_numbers:
+                                        season_request = sr
+                                        break
+                            if season_request:
+                                break
                         
                         # Get download status if exists
                         download_status = None
                         download_progress = None
                         if season_request:
-                            download = db.query(Download).filter(
-                                Download.id == season_request.download_id
-                            ).first()
+                            download = download_store.load(str(season_request.download_id))
                             if download:
                                 download_status = download.status
                                 download_progress = download.progress

@@ -192,24 +192,22 @@ def parse_episode_count_from_title(title: str) -> Optional[int]:
     return None
 
 
-def get_episode_count_from_tmdb(tmdb_id: int, season_number: int, db_session) -> Optional[int]:
+def get_episode_count_from_tmdb(tmdb_id: int, season_number: int) -> Optional[int]:
     """
     Get episode count from TMDB cache (Tier 2 detection).
     
     Args:
         tmdb_id: TMDB ID
         season_number: Season number
-        db_session: Database session
         
     Returns:
         Episode count from cache or None if not cached
     """
-    from src.models import TMDBSeasonCache
+    from src.pickle_stores import tmdb_season_cache_store
     
-    cache_entry = db_session.query(TMDBSeasonCache).filter(
-        TMDBSeasonCache.tmdb_id == tmdb_id,
-        TMDBSeasonCache.season_number == season_number
-    ).first()
+    # Build composite index key
+    index_key = f"{tmdb_id}__{season_number}"
+    cache_entry = tmdb_season_cache_store.find_by_index('tmdb_id__season_number', index_key)
     
     if cache_entry:
         debug(f"[SCORING] Found TMDB cache: {cache_entry.episode_count} episodes")
@@ -283,7 +281,6 @@ def get_episode_count(
     torrent: TorrentResult,
     tmdb_id: Optional[int] = None,
     season_number: Optional[int] = None,
-    db_session = None,
     qb_client: Optional[QBittorrentClient] = None,
     use_magnet: bool = False
 ) -> Optional[int]:
@@ -298,7 +295,6 @@ def get_episode_count(
         torrent: Torrent result
         tmdb_id: TMDB ID for cache lookup
         season_number: Season number for cache lookup
-        db_session: Database session for cache access
         qb_client: qBittorrent client for metadata fetching
         use_magnet: Whether to use Tier 3 (expensive operation)
         
@@ -312,8 +308,8 @@ def get_episode_count(
         return count
     
     # Tier 2: TMDB cache
-    if tmdb_id and season_number and db_session:
-        count = get_episode_count_from_tmdb(tmdb_id, season_number, db_session)
+    if tmdb_id and season_number:
+        count = get_episode_count_from_tmdb(tmdb_id, season_number)
         if count:
             debug(f"[SCORING] Episode count from TMDB cache: {count}")
             return count
@@ -414,7 +410,6 @@ def rank_torrents(
     tmdb_id: Optional[int] = None,
     season_number: Optional[int] = None,
     requested_episodes: Optional[List[int]] = None,
-    db_session = None,
     qb_client: Optional[QBittorrentClient] = None
 ) -> List[ScoredTorrent]:
     """
@@ -426,7 +421,6 @@ def rank_torrents(
         tmdb_id: TMDB ID for episode count lookup
         season_number: Season number for TV shows
         requested_episodes: Specific episodes requested (None = full season)
-        db_session: Database session
         qb_client: qBittorrent client for metadata fetching
         
     Returns:
@@ -456,7 +450,7 @@ def rank_torrents(
         if season_number is not None and is_season_pack:
             # Get episode count (Tier 1 + 2 only at this stage)
             episode_count = get_episode_count(
-                torrent, tmdb_id, season_number, db_session, qb_client, use_magnet=False
+                torrent, tmdb_id, season_number, qb_client, use_magnet=False
             )
             
             if episode_count:
@@ -495,7 +489,7 @@ def rank_torrents(
             if scored.is_season_pack and not scored.episode_count:
                 info(f"[SCORING] Refining top {i+1} torrent with magnet metadata...")
                 episode_count = get_episode_count(
-                    scored.torrent, tmdb_id, season_number, db_session, qb_client, use_magnet=True
+                    scored.torrent, tmdb_id, season_number, qb_client, use_magnet=True
                 )
                 
                 if episode_count:

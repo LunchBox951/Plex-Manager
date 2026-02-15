@@ -1,6 +1,10 @@
 """
 Database configuration and session management.
-Uses SQLAlchemy with SQLite for user data storage.
+Uses SQLAlchemy with SQLite for sensitive user data and audit logs.
+
+NOTE: Most application data (downloads, media requests, caches) is now stored
+in pickle files for schema flexibility. Only User, Settings, and AuditLog models
+remain in SQLite for ACID compliance and security.
 """
 
 import os

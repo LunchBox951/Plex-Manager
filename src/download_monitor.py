@@ -14,7 +14,8 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from filelock import FileLock, Timeout
 
 from src.database import SessionLocal
-from src.models import Download, MediaRequest
+from src.pickle_models import Download, MediaRequest, EpisodeRetention, SeasonRequest
+from src.pickle_stores import download_store, media_request_store, episode_retention_store, season_request_store, tmdb_season_cache_store
 from src.qbittorrent import get_qbittorrent_client
 from src.torrent_validator import (
     is_video_file, is_subtitle_file, parse_episode_info,
@@ -381,14 +382,13 @@ def _process_tv_files_locked(download: Download, torrent_files: List[Dict]) -> D
     return results
 
 
-def on_download_complete(download: Download, db_session):
+def on_download_complete(download: Download):
     """
     Callback when download completes.
     Copies files to appropriate media directory.
     
     Args:
         download: Download record
-        db_session: Database session
     """
     print_info(f"Processing completed download: {download.torrent_hash}", prefix="MONITOR")
     
@@ -402,7 +402,7 @@ def on_download_complete(download: Download, db_session):
         download.status = "failed"
         download.failed_reason = "No files found in completed torrent"
         download.failed_at = datetime.utcnow()
-        db_session.commit()
+        download_store.save(download)
         return
     
     # Process based on media type
@@ -415,7 +415,7 @@ def on_download_complete(download: Download, db_session):
         download.status = "failed"
         download.failed_reason = f"Unknown media type: {download.media_type}"
         download.failed_at = datetime.utcnow()
-        db_session.commit()
+        download_store.save(download)
         return
     
     # Store processed files
@@ -442,15 +442,11 @@ def on_download_complete(download: Download, db_session):
     
     # Update MediaRequest status
     if download.media_request_id:
-        media_request = db_session.query(MediaRequest).filter(
-            MediaRequest.id == download.media_request_id
-        ).first()
+        media_request = media_request_store.load(str(download.media_request_id))
         
         if media_request:
             # Check all downloads for this request
-            all_downloads = db_session.query(Download).filter(
-                Download.media_request_id == media_request.id
-            ).all()
+            all_downloads = download_store.list_by_index('media_request_id', str(media_request.id))
             
             # Count download states
             downloading_count = sum(1 for d in all_downloads if d.status == 'downloading')
@@ -481,19 +477,20 @@ def on_download_complete(download: Download, db_session):
             else:
                 # Mixed state - some failed but not all
                 media_request.status = 'processing'
+            
+            media_request_store.save(media_request)
     
-    db_session.commit()
+    download_store.save(download)
     print_info(f"Download processing complete: {download.status}", prefix="MONITOR")
 
 
-def on_seed_complete_or_timeout(download: Download, db_session, reason: str):
+def on_seed_complete_or_timeout(download: Download, reason: str):
     """
     Callback when seeding is complete or timeout reached.
     Deletes download files and removes torrent from qBittorrent.
     
     Args:
         download: Download record
-        db_session: Database session
         reason: 'seed_complete' or 'timeout'
     """
     print_info(f"Cleaning up download {download.torrent_hash}: {reason}", prefix="MONITOR")
@@ -506,20 +503,19 @@ def on_seed_complete_or_timeout(download: Download, db_session, reason: str):
     if success:
         # Mark as completed
         download.status = "completed"
-        db_session.commit()
+        download_store.save(download)
         print_success(f"Successfully cleaned up download {download.torrent_hash}")
     else:
         print_error(f"Failed to delete torrent from qBittorrent: {download.torrent_hash}")
 
 
-def on_failure(download: Download, db_session, reason: str):
+def on_failure(download: Download, reason: str):
     """
     Callback when download fails.
     Marks as failed and removes from qBittorrent.
     
     Args:
         download: Download record
-        db_session: Database session
         reason: Failure reason
     """
     print_failure(f"Download ID {download.id} | Hash: {download.torrent_hash} | Reason: {reason}")
@@ -528,7 +524,7 @@ def on_failure(download: Download, db_session, reason: str):
     download.status = "failed"
     download.failed_reason = reason
     download.failed_at = datetime.utcnow()
-    db_session.commit()
+    download_store.save(download)
     
     print_info(f"Download ID {download.id} | Attempting to remove from qBittorrent...", prefix="MONITOR")
     
@@ -555,9 +551,8 @@ def monitor_downloads():
         qb = get_qbittorrent_client()
         
         # Get all active downloads
-        active_downloads = db.query(Download).filter(
-            Download.status.in_(['pending', 'downloading', 'seeding'])
-        ).all()
+        active_ids = download_store.get_ids_by_index_multi('status', ['pending', 'downloading', 'seeding'])
+        active_downloads = [download_store.load(id) for id in active_ids if download_store.load(id)]
         
         if not active_downloads:
             return
@@ -605,7 +600,7 @@ def monitor_downloads():
                         "grace_period_minutes": grace_period_minutes,
                         "state_change": "marking_as_failed"
                     })
-                    on_failure(download, db, "Torrent not found in qBittorrent after grace period")
+                    on_failure(download, "Torrent not found in qBittorrent after grace period")
                     continue
                 
                 # Torrent found in qBittorrent - update progress
@@ -625,9 +620,7 @@ def monitor_downloads():
                 
                 # Update MediaRequest status if linked
                 if download.media_request_id:
-                    media_request = db.query(MediaRequest).filter(
-                        MediaRequest.id == download.media_request_id
-                    ).first()
+                    media_request = media_request_store.load(download.media_request_id)
                     
                     if media_request and media_request.status == 'downloading':
                         # Keep status as downloading with updated progress tracked in Download records
@@ -642,7 +635,7 @@ def monitor_downloads():
                         "qb_state": qb_state,
                         "state_change": "marking_as_failed"
                     })
-                    on_failure(download, db, f"qBittorrent error state: {qb_state}")
+                    on_failure(download, f"qBittorrent error state: {qb_state}")
                     continue
                 
                 # Check if download completed and files need to be copied
@@ -671,13 +664,13 @@ def monitor_downloads():
                             "qb_state": qb_state,
                             "state_change": "copying_files_to_library"
                         })
-                        on_download_complete(download, db)
+                        on_download_complete(download)
                         continue
                     elif is_complete and files_already_copied:
                         # Files already copied, ensure status is 'seeding'
                         if download.status != 'seeding':
                             download.status = 'seeding'
-                            db.commit()
+                            download_store.save(download)
                 
                 # Check if seeding and ratio met
                 if download.status == 'seeding':
@@ -688,7 +681,7 @@ def monitor_downloads():
                             "target_ratio": round(download.target_seed_ratio, 2),
                             "state_change": "completing"
                         })
-                        on_seed_complete_or_timeout(download, db, "seed_complete")
+                        on_seed_complete_or_timeout(download, "seed_complete")
                         continue
                     
                     # Check for timeout
@@ -699,20 +692,18 @@ def monitor_downloads():
                             "target_ratio": round(download.target_seed_ratio, 2),
                             "state_change": "timeout_reached"
                         })
-                        on_seed_complete_or_timeout(download, db, "timeout")
+                        on_seed_complete_or_timeout(download, "timeout")
                         continue
                 
-                # Commit progress updates
-                db.commit()
+                # Save progress updates
+                download_store.save(download)
                 
             except Exception as e:
                 print_error(f"ERROR processing download {download.id}: {e}", prefix="MONITOR")
-                db.rollback()
         
         # Summary after checking all downloads
-        final_status = db.query(Download).filter(
-            Download.status.in_(['pending', 'downloading', 'seeding'])
-        ).all()
+        active_ids = download_store.get_ids_by_index_multi('status', ['pending', 'downloading', 'seeding'])
+        final_status = [download_store.load(id) for id in active_ids if download_store.load(id)]
         
         status_counts = {}
         for dl in final_status:
@@ -740,20 +731,24 @@ def cleanup_old_downloads():
         cutoff_date = datetime.utcnow() - timedelta(days=90)
         
         # Delete completed downloads whose MediaRequest has been deleted
-        deleted_completed = db.query(Download).join(
-            MediaRequest, Download.media_request_id == MediaRequest.id
-        ).filter(
-            Download.status == 'completed',
-            MediaRequest.status == 'deleted'
-        ).delete(synchronize_session=False)
+        deleted_completed = 0
+        completed_ids = download_store.get_ids_by_index('status', 'completed')
+        for id in completed_ids:
+            download = download_store.load(id)
+            if download and download.media_request_id:
+                media_request = media_request_store.load(download.media_request_id)
+                if media_request and media_request.status == 'deleted':
+                    download_store.delete(id)
+                    deleted_completed += 1
         
         # Delete failed downloads older than 90 days
-        deleted_failed = db.query(Download).filter(
-            Download.status.in_(['failed', 'partial_failed']),
-            Download.failed_at < cutoff_date
-        ).delete()
-        
-        db.commit()
+        deleted_failed = 0
+        failed_ids = download_store.get_ids_by_index_multi('status', ['failed', 'partial_failed'])
+        for id in failed_ids:
+            download = download_store.load(id)
+            if download and download.failed_at and download.failed_at < cutoff_date:
+                download_store.delete(id)
+                deleted_failed += 1
         
         total_deleted = deleted_completed + deleted_failed
         if total_deleted > 0:
@@ -778,9 +773,7 @@ def verify_library_status():
     
     try:
         # Get all MediaRequests with status 'available'
-        available_requests = db.query(MediaRequest).filter(
-            MediaRequest.status == 'available'
-        ).all()
+        available_requests = media_request_store.list_by_index('status', 'available')
         
         if not available_requests:
             print_debug("No available media to verify")
@@ -804,12 +797,14 @@ def verify_library_status():
                 if exists.get('exists'):
                     # Media still in library - update verification timestamp
                     media_request.library_verified_at = datetime.utcnow()
+                    media_request_store.save(media_request)
                     verified_count += 1
                 else:
                     # Media removed from library - mark as deleted
                     media_request.status = 'deleted'
                     media_request.deleted_at = datetime.utcnow()
                     media_request.library_removed_at = datetime.utcnow()
+                    media_request_store.save(media_request)
                     removed_count += 1
                     print_warning(f"  Media removed from library: {media_request.title} ({media_request.year})")
                 
@@ -818,12 +813,10 @@ def verify_library_status():
                 print_error(f"  Error verifying {media_request.title}: {e}")
                 continue
         
-        db.commit()
         print_info(f"Library verification complete: {verified_count} verified, {removed_count} marked deleted, {error_count} errors")
         
     except Exception as e:
         print_error(f"Error in verify_library_status: {e}")
-        db.rollback()
     finally:
         db.close()
 
@@ -840,7 +833,6 @@ def check_scheduled_deletions():
         track_watch_status,
         track_episode_watch_status
     )
-    from src.models import MediaRequest, EpisodeRetention
     from src.media import Movie, TVShow
     from src.plex import get_plex_server
     from datetime import datetime
@@ -853,11 +845,14 @@ def check_scheduled_deletions():
         deletion_count = 0
         
         # Get all media requests scheduled for deletion
-        media_requests = db.query(MediaRequest).filter(
-            MediaRequest.deletion_scheduled_at <= datetime.utcnow(),
-            MediaRequest.auto_delete_enabled == 1,
-            MediaRequest.status != 'deleted'
-        ).all()
+        now = datetime.utcnow()
+        all_requests = media_request_store.list_all()
+        media_requests = [
+            req for req in all_requests
+            if req.deletion_scheduled_at and req.deletion_scheduled_at <= now
+            and req.auto_delete_enabled == 1
+            and req.status != 'deleted'
+        ]
         
         print_info(f"Found {len(media_requests)} media items scheduled for deletion")
         
@@ -871,7 +866,7 @@ def check_scheduled_deletions():
                 if protected or effective_retention == 'forever':
                     print_info(f"Skipping {request.title} - protected by retention policy")
                     request.deletion_scheduled_at = None
-                    db.commit()
+                    media_request_store.save(request)
                     continue
                 
                 # Send notification placeholder
@@ -891,15 +886,18 @@ def check_scheduled_deletions():
                         movie.delete()
                         request.status = 'deleted'
                         request.deleted_at = datetime.utcnow()
+                        media_request_store.save(request)
                         deletion_count += 1
                         print_success(f"Deleted movie: {request.title} (retention: {request.retention_type})")
                 
                 elif request.media_type == 'tv':
                     # Handle TV show episode deletions
-                    episode_retentions = db.query(EpisodeRetention).filter(
-                        EpisodeRetention.media_request_id == request.id,
-                        EpisodeRetention.deletion_scheduled_at <= datetime.utcnow()
-                    ).all()
+                    all_ep_retentions = episode_retention_store.list_by_index('media_request_id', request.id)
+                    now = datetime.utcnow()
+                    episode_retentions = [
+                        ep for ep in all_ep_retentions
+                        if ep.deletion_scheduled_at and ep.deletion_scheduled_at <= now
+                    ]
                     
                     library = plex.library.section('TV Shows')
                     results = library.search(title=request.title)
@@ -919,6 +917,7 @@ def check_scheduled_deletions():
                             if ep_protected or ep_effective == 'forever':
                                 print_info(f"Skipping S{ep_retention.season_number}E{ep_retention.episode_number} - protected")
                                 ep_retention.deletion_scheduled_at = None
+                                episode_retention_store.save(ep_retention)
                                 continue
                             
                             # Find and delete episode
@@ -932,27 +931,25 @@ def check_scheduled_deletions():
                                             break
                         
                         # Check if all episodes deleted, mark show as deleted
-                        remaining_episodes = db.query(EpisodeRetention).filter(
-                            EpisodeRetention.media_request_id == request.id,
-                            EpisodeRetention.deletion_scheduled_at.isnot(None)
-                        ).count()
+                        all_ep_retentions = episode_retention_store.list_by_index('media_request_id', request.id)
+                        remaining_episodes = sum(
+                            1 for ep in all_ep_retentions
+                            if ep.deletion_scheduled_at is not None
+                        )
                         
                         if remaining_episodes == 0:
                             request.status = 'deleted'
                             request.deleted_at = datetime.utcnow()
-                
-                db.commit()
+                            media_request_store.save(request)
                 
             except Exception as e:
                 print_error(f"Error deleting {request.title}: {e}")
-                db.rollback()
                 continue
         
         print_info(f"Scheduled deletion check complete. Deleted {deletion_count} items.")
         
     except Exception as e:
         print_error(f"Error in check_scheduled_deletions: {e}")
-        db.rollback()
     finally:
         db.close()
 
@@ -1031,7 +1028,6 @@ async def nightly_episode_check():
     
     This consolidates retry logic and new episode detection in one job.
     """
-    from src.models import TMDBSeasonCache, SeasonRequest
     from src.TMDB import season_service, safe_tmdb_call
     from src.prowlarr import get_prowlarr_client, CATEGORY_TV
     from src.scoring import rank_torrents, select_best_torrent
@@ -1052,19 +1048,18 @@ async def nightly_episode_check():
         
         print_info("Part 1: Retrying failed/pending downloads...", prefix="NIGHTLY CHECK")
         
-        retry_downloads = db.query(Download).filter(
-            Download.status.in_(['failed', 'pending']),
-            Download.retry_count < 5
-        ).all()
+        retry_ids = download_store.get_ids_by_index_multi('status', ['failed', 'pending'])
+        retry_downloads = [
+            download_store.load(id) for id in retry_ids
+            if download_store.load(id) and download_store.load(id).retry_count < 5
+        ]
         
         print_info(f"Found {len(retry_downloads)} downloads eligible for retry")
         
         for download in retry_downloads:
             try:
                 # Get associated MediaRequest for title info
-                media_request = db.query(MediaRequest).filter(
-                    MediaRequest.id == download.media_request_id
-                ).first()
+                media_request = media_request_store.load(download.media_request_id) if download.media_request_id else None
                 
                 if not media_request:
                     print_warning(f"Download {download.id} has no associated MediaRequest, skipping")
@@ -1101,13 +1096,13 @@ async def nightly_episode_check():
                     print_info(f"No torrents found for retry, incrementing retry count")
                     download.retry_count += 1
                     download.next_check_at = datetime.utcnow() + timedelta(days=1)
-                    db.commit()
+                    download_store.save(download)
                     continue
                 
                 # Get failed hashes to exclude
-                failed_hashes = {d.torrent_hash.lower() for d in db.query(Download).filter(
-                    Download.status.in_(['failed', 'partial_failed'])
-                ).all()}
+                failed_ids = download_store.get_ids_by_index_multi('status', ['failed', 'partial_failed'])
+                failed_downloads = [download_store.load(id) for id in failed_ids if download_store.load(id)]
+                failed_hashes = {d.torrent_hash.lower() for d in failed_downloads}
                 
                 # Score torrents
                 qb = get_qbittorrent_client()
@@ -1117,7 +1112,6 @@ async def nightly_episode_check():
                     tmdb_id=download.tmdb_id if download.media_type == 'tv' else None,
                     season_number=download.season,
                     requested_episodes=json.loads(download.episodes) if download.episodes else None,
-                    db_session=db,
                     qb_client=qb
                 )
                 
@@ -1125,7 +1119,7 @@ async def nightly_episode_check():
                     print_info(f"No suitable torrents after filtering, incrementing retry count")
                     download.retry_count += 1
                     download.next_check_at = datetime.utcnow() + timedelta(days=1)
-                    db.commit()
+                    download_store.save(download)
                     continue
                 
                 # Select best torrent
@@ -1135,7 +1129,7 @@ async def nightly_episode_check():
                     print_info(f"No torrents meet quality requirements, incrementing retry count")
                     download.retry_count += 1
                     download.next_check_at = datetime.utcnow() + timedelta(days=1)
-                    db.commit()
+                    download_store.save(download)
                     continue
                 
                 # Extract info hash
@@ -1143,20 +1137,17 @@ async def nightly_episode_check():
                 if not info_hash:
                     print_error(f"Could not extract info hash from magnet")
                     download.retry_count += 1
-                    db.commit()
+                    download_store.save(download)
                     continue
                 
                 # Check if already downloading
-                existing = db.query(Download).filter(
-                    Download.torrent_hash == info_hash,
-                    Download.id != download.id
-                ).first()
+                existing = download_store.find_by_index('torrent_hash', info_hash)
                 
-                if existing:
+                if existing and existing.id != download.id:
                     print_info(f"Torrent already exists as download {existing.id}, marking original as failed")
                     download.status = 'failed'
                     download.failed_reason = f"Duplicate of download {existing.id}"
-                    db.commit()
+                    download_store.save(download)
                     continue
                 
                 # Delete old torrent from qBittorrent if it exists
@@ -1181,7 +1172,7 @@ async def nightly_episode_check():
                     print_error(f"qBittorrent failed to add magnet")
                     download.retry_count += 1
                     download.next_check_at = datetime.utcnow() + timedelta(days=1)
-                    db.commit()
+                    download_store.save(download)
                     continue
                 
                 # Wait for metadata
@@ -1193,7 +1184,7 @@ async def nightly_episode_check():
                     print_error(f"Failed to retrieve torrent info")
                     qb.delete_torrent(info_hash, delete_files=True)
                     download.retry_count += 1
-                    db.commit()
+                    download_store.save(download)
                     continue
                 
                 files = qb.get_torrent_files(info_hash)
@@ -1201,7 +1192,7 @@ async def nightly_episode_check():
                     print_error(f"No files found in torrent")
                     qb.delete_torrent(info_hash, delete_files=True)
                     download.retry_count += 1
-                    db.commit()
+                    download_store.save(download)
                     continue
                 
                 # Validate files
@@ -1210,7 +1201,7 @@ async def nightly_episode_check():
                     print_error(f"Torrent validation failed: {validation.reason}")
                     qb.delete_torrent(info_hash, delete_files=True)
                     download.retry_count += 1
-                    db.commit()
+                    download_store.save(download)
                     continue
                 
                 # Update download record with new torrent
@@ -1231,14 +1222,14 @@ async def nightly_episode_check():
                     'retry': download.retry_count
                 })
                 
-                db.commit()
+                download_store.save(download)
                 print_success(f"✓ Successfully retried download {download.id} with new torrent")
                 
             except Exception as e:
                 print_error(f"Error retrying download {download.id}: {e}")
                 download.retry_count += 1
                 download.next_check_at = datetime.utcnow() + timedelta(days=1)
-                db.commit()
+                download_store.save(download)
         
         # ====================================================================
         # Part 2: Check for New Episode Releases
@@ -1247,11 +1238,13 @@ async def nightly_episode_check():
         print_info("Part 2: Checking for new episode releases...", prefix="NIGHTLY CHECK")
         
         # Get all tracked shows (track_upcoming = 1)
-        tracked_requests = db.query(MediaRequest).filter(
-            MediaRequest.media_type == 'tv',
-            MediaRequest.track_upcoming == 1,
-            MediaRequest.status != 'deleted'
-        ).all()
+        all_requests = media_request_store.list_all()
+        tracked_requests = [
+            req for req in all_requests
+            if req.media_type == 'tv'
+            and req.track_upcoming == 1
+            and req.status != 'deleted'
+        ]
         
         print_info(f"Found {len(tracked_requests)} TV shows with upcoming episode tracking enabled")
         
@@ -1260,10 +1253,10 @@ async def nightly_episode_check():
                 print_info(f"Checking {media_request.title} for new episodes...")
                 
                 # Get ongoing seasons for this show
-                ongoing_seasons = db.query(TMDBSeasonCache).filter(
-                    TMDBSeasonCache.tmdb_id == media_request.tmdb_id,
-                    TMDBSeasonCache.season_status == 'ongoing'
-                ).all()
+                ongoing_seasons = [
+                    s for s in tmdb_season_cache_store.list_by_index('tmdb_id', media_request.tmdb_id)
+                    if s.season_status == 'ongoing'
+                ]
                 
                 if not ongoing_seasons:
                     print_info(f"No ongoing seasons found for {media_request.title}")
@@ -1301,11 +1294,18 @@ async def nightly_episode_check():
                         print_info(f"Found episode aired yesterday: S{season_cache.season_number:02d}E{episode_num:02d}")
                         
                         # Check if already requested (look for existing SeasonRequest)
-                        existing_season_request = db.query(SeasonRequest).join(Download).filter(
-                            Download.media_request_id == media_request.id,
-                            SeasonRequest.season_number == season_cache.season_number,
-                            SeasonRequest.episode_numbers.like(f'%{episode_num}%')
-                        ).first()
+                        # Get all season requests for this media request
+                        all_downloads = download_store.list_by_index('media_request_id', media_request.id)
+                        existing_season_request = None
+                        for dl in all_downloads:
+                            season_reqs = season_request_store.list_by_index('download_id', dl.id)
+                            for sr in season_reqs:
+                                if sr.season_number == season_cache.season_number:
+                                    if sr.episode_numbers and f'{episode_num}' in sr.episode_numbers:
+                                        existing_season_request = sr
+                                        break
+                            if existing_season_request:
+                                break
                         
                         if existing_season_request:
                             print_info(f"Episode already requested, skipping")
@@ -1326,9 +1326,9 @@ async def nightly_episode_check():
                                 continue
                             
                             # Get failed hashes
-                            failed_hashes = {d.torrent_hash.lower() for d in db.query(Download).filter(
-                                Download.status.in_(['failed', 'partial_failed'])
-                            ).all()}
+                            failed_ids = download_store.get_ids_by_index_multi('status', ['failed', 'partial_failed'])
+                            failed_downloads = [download_store.load(id) for id in failed_ids if download_store.load(id)]
+                            failed_hashes = {d.torrent_hash.lower() for d in failed_downloads}
                             
                             # Score torrents
                             qb = get_qbittorrent_client()
@@ -1338,7 +1338,6 @@ async def nightly_episode_check():
                                 tmdb_id=media_request.tmdb_id,
                                 season_number=season_cache.season_number,
                                 requested_episodes=[episode_num],
-                                db_session=db,
                                 qb_client=qb
                             )
                             
@@ -1359,9 +1358,7 @@ async def nightly_episode_check():
                                 continue
                             
                             # Check for duplicates
-                            existing_download = db.query(Download).filter(
-                                Download.torrent_hash == info_hash
-                            ).first()
+                            existing_download = download_store.find_by_index('torrent_hash', info_hash)
                             
                             if existing_download:
                                 print_info(f"Torrent already downloading as {existing_download.id}")
@@ -1430,8 +1427,7 @@ async def nightly_episode_check():
                                 torrent_attempt=1
                             )
                             
-                            db.add(download)
-                            db.flush()
+                            download = download_store.save(download)
                             
                             # Create SeasonRequest
                             season_req = SeasonRequest(
@@ -1441,8 +1437,7 @@ async def nightly_episode_check():
                                 status='pending'
                             )
                             
-                            db.add(season_req)
-                            db.commit()
+                            season_request_store.save(season_req)
                             
                             print_success(f"✓ Successfully added download for S{season_cache.season_number:02d}E{episode_num:02d}")
                             

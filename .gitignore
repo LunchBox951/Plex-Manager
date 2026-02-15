@@ -7,12 +7,19 @@
 data/*.db
 data/*.db-journal
 
+# Pickle stores
+data/*/*.pkl
+cache/*/*.pkl
+
 # Logs
 *console.log
 
 # Cache
 cache/*
 !cache/.gitkeep
+!cache/images/
+cache/images/*
+!cache/images/.gitkeep
 
 # Python
 __pycache__/

@@ -12,11 +12,10 @@ from datetime import datetime, timedelta
 from typing import List, Optional, Dict, Any
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
-from sqlalchemy.orm import Session
-from sqlalchemy.exc import IntegrityError
 
-from src.database import get_db
-from src.models import Download, SeasonRequest, MediaRequest, EpisodeRetention, User
+from src.models import User
+from src.pickle_models import Download, SeasonRequest, MediaRequest, EpisodeRetention
+from src.pickle_stores import download_store, season_request_store, media_request_store, episode_retention_store, tmdb_season_cache_store
 from src.qbittorrent import get_qbittorrent_client, QBittorrentClient
 from src.torrent_validator import validate_torrent_files
 from src.auth import get_current_user
@@ -123,8 +122,7 @@ class DownloadResponse(BaseModel):
 
 @router.post("/downloads/add", response_model=DownloadResponse)
 async def add_download(
-    request: AddDownloadRequest,
-    db: Session = Depends(get_db)
+    request: AddDownloadRequest
 ):
     """
     Add a new torrent download from magnet link.
@@ -148,7 +146,7 @@ async def add_download(
         raise HTTPException(status_code=400, detail="Invalid magnet link format")
     
     # Check for duplicate
-    existing = db.query(Download).filter(Download.torrent_hash == info_hash).first()
+    existing = download_store.find_by_index('torrent_hash', info_hash)
     if existing:
         raise HTTPException(
             status_code=409,
@@ -208,9 +206,7 @@ async def add_download(
         will_timeout_at=will_timeout_at
     )
     
-    db.add(download)
-    db.commit()
-    db.refresh(download)
+    download = download_store.save(download)
     
     # Convert to response using to_dict
     download_dict = download.to_dict()
@@ -220,22 +216,22 @@ async def add_download(
 @router.get("/downloads", response_model=List[DownloadResponse])
 async def list_downloads(
     status: Optional[str] = None,
-    media_type: Optional[str] = None,
-    db: Session = Depends(get_db)
+    media_type: Optional[str] = None
 ):
     """
     List all downloads with optional filtering.
     Returns database snapshot only (no real-time qBittorrent queries).
     """
-    query = db.query(Download)
-    
     if status:
-        query = query.filter(Download.status == status)
+        downloads = download_store.list_by_index('status', status)
+    else:
+        downloads = download_store.list_all()
     
     if media_type:
-        query = query.filter(Download.media_type == media_type)
+        downloads = [d for d in downloads if d.media_type == media_type]
     
-    downloads = query.order_by(Download.added_at.desc()).all()
+    # Sort by added_at desc
+    downloads.sort(key=lambda d: d.added_at, reverse=True)
     
     return [DownloadResponse(**d.to_dict()) for d in downloads]
 
@@ -244,8 +240,7 @@ async def list_downloads(
 @router.get("/downloads/test")
 async def test_downloads_endpoint(
     test_param: str = "default",
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    current_user: User = Depends(get_current_user)
 ):
     return {
         "status": "ok",
@@ -259,8 +254,7 @@ async def get_active_downloads(
     status: str = "all",
     sort_by: str = "date",
     search: str = "",
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    current_user: User = Depends(get_current_user)
 ):
     """
     Get all active downloads from qBittorrent with filtering and sorting.
@@ -307,10 +301,10 @@ async def get_active_downloads(
         
         # Get request counts
         request_counts = {
-            'pending': db.query(MediaRequest).filter(MediaRequest.status == 'pending').count(),
-            'downloading': db.query(MediaRequest).filter(MediaRequest.status == 'downloading').count(),
-            'processing': db.query(MediaRequest).filter(MediaRequest.status == 'processing').count(),
-            'total': db.query(MediaRequest).count()
+            'pending': len(media_request_store.list_by_index('status', 'pending')),
+            'downloading': len(media_request_store.list_by_index('status', 'downloading')),
+            'processing': len(media_request_store.list_by_index('status', 'processing')),
+            'total': len(media_request_store.list_all())
         }
         
         # Format torrent data
@@ -392,11 +386,10 @@ def format_eta(seconds):
 
 @router.get("/downloads/{download_id}", response_model=DownloadResponse)
 async def get_download(
-    download_id: int,
-    db: Session = Depends(get_db)
+    download_id: int
 ):
     """Get detailed information about a specific download."""
-    download = db.query(Download).filter(Download.id == download_id).first()
+    download = download_store.load(download_id)
     
     if not download:
         raise HTTPException(status_code=404, detail="Download not found")
@@ -407,8 +400,7 @@ async def get_download(
 @router.delete("/downloads/{download_id}")
 async def delete_download(
     download_id: int,
-    delete_files: bool = False,
-    db: Session = Depends(get_db)
+    delete_files: bool = False
 ):
     """
     Delete a download and optionally remove from qBittorrent.
@@ -417,7 +409,7 @@ async def delete_download(
         download_id: Download ID
         delete_files: Whether to also delete files from disk
     """
-    download = db.query(Download).filter(Download.id == download_id).first()
+    download = download_store.load(download_id)
     
     if not download:
         raise HTTPException(status_code=404, detail="Download not found")
@@ -428,33 +420,30 @@ async def delete_download(
     if download.status in ['downloading', 'seeding', 'pending']:
         qb.delete_torrent(str(download.torrent_hash), delete_files=delete_files)
     
-    # Delete from database
-    db.delete(download)
-    db.commit()
+    # Delete from store
+    download_store.delete(download_id)
     
     return {"message": "Download deleted successfully"}
 
 
 @router.get("/downloads/failed-hashes", response_model=List[str])
-async def get_failed_hashes(db: Session = Depends(get_db)):
+async def get_failed_hashes():
     """
     Get list of info hashes for failed downloads.
     Used by requesting system to exclude problematic magnets.
     """
-    failed_downloads = db.query(Download).filter(
-        Download.status.in_(['failed', 'partial_failed'])
-    ).all()
+    failed_ids = download_store.get_ids_by_index_multi('status', ['failed', 'partial_failed'])
+    failed_downloads = [download_store.load(id) for id in failed_ids if download_store.load(id)]
     
     return [d.torrent_hash for d in failed_downloads]
 
 
 @router.post("/downloads/{download_id}/pause")
 async def pause_download(
-    download_id: int,
-    db: Session = Depends(get_db)
+    download_id: int
 ):
     """Pause a download in qBittorrent."""
-    download = db.query(Download).filter(Download.id == download_id).first()
+    download = download_store.load(download_id)
     
     if not download:
         raise HTTPException(status_code=404, detail="Download not found")
@@ -473,11 +462,10 @@ async def pause_download(
 
 @router.post("/downloads/{download_id}/resume")
 async def resume_download(
-    download_id: int,
-    db: Session = Depends(get_db)
+    download_id: int
 ):
     """Resume a paused download in qBittorrent."""
-    download = db.query(Download).filter(Download.id == download_id).first()
+    download = download_store.load(download_id)
     
     if not download:
         raise HTTPException(status_code=404, detail="Download not found")
@@ -527,8 +515,7 @@ class MediaRequestResponse(BaseModel):
 
 @router.post("/media/request", response_model=MediaRequestResponse)
 async def request_media(
-    request: MediaRequestModel,
-    db: Session = Depends(get_db)
+    request: MediaRequestModel
 ):
     """
     Request media download with automatic Prowlarr search and Plex verification.
@@ -620,9 +607,8 @@ async def request_media(
         print_monitor({"torrents_found": len(torrents), "media_type": request.media_type, "title": title}, prefix="DOWNLOADS")
         
         # Step 4: Get failed hashes to exclude
-        failed_downloads = db.query(Download).filter(
-            Download.status.in_(['failed', 'partial_failed'])
-        ).all()
+        failed_ids = download_store.get_ids_by_index_multi('status', ['failed', 'partial_failed'])
+        failed_downloads = [download_store.load(id) for id in failed_ids if download_store.load(id)]
         failed_hashes = {d.torrent_hash.lower() for d in failed_downloads}
         
         # Step 5: Score and rank torrents
@@ -660,7 +646,7 @@ async def request_media(
                     raise ValueError("Could not extract info hash from magnet")
                 
                 # Check for duplicates
-                existing = db.query(Download).filter(Download.torrent_hash == info_hash).first()
+                existing = download_store.find_by_index('torrent_hash', info_hash)
                 if existing:
                     print_info(f"Torrent already in downloads: {existing.id}", prefix="DOWNLOADS")
                     return MediaRequestResponse(
@@ -731,9 +717,7 @@ async def request_media(
                     episodes=json.dumps(request.episodes) if request.episodes else None
                 )
                 
-                db.add(download)
-                db.commit()
-                db.refresh(download)
+                download = download_store.save(download)
                 
                 print_monitor({"download_id": download.id, "status": "added", "media_type": request.media_type}, prefix="DOWNLOADS")
                 
@@ -745,8 +729,7 @@ async def request_media(
                         episode_numbers=json.dumps(request.episodes) if request.episodes else None,
                         status='pending'
                     )
-                    db.add(season_req)
-                    db.commit()
+                    season_req = season_request_store.save(season_req)
                 
                 return MediaRequestResponse(
                     status="success",
@@ -815,8 +798,7 @@ class UnifiedMediaRequestResponse(BaseModel):
 @router.post("/media/request-unified", response_model=UnifiedMediaRequestResponse)
 async def request_media_unified(
     request: UnifiedMediaRequestModel,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    current_user: User = Depends(get_current_user)
 ):
     """
     Unified media request endpoint handling the complete workflow.
@@ -968,11 +950,10 @@ async def request_media_unified(
         # ====================================================================
         
         print_info("[Step 3/9] Checking for existing requests...", prefix="DOWNLOADS")
-        existing_requests = db.query(MediaRequest).filter(
-            MediaRequest.tmdb_id == request.tmdb_id,
-            MediaRequest.media_type == request.media_type,
-            MediaRequest.status != 'deleted'
-        ).all()
+        # Get composite index key for tmdb_id and media_type
+        index_key = f"{request.tmdb_id}__{request.media_type}"
+        existing_requests = [r for r in media_request_store.list_by_index('tmdb_id__media_type', index_key)
+                            if r.status != 'deleted']
         
         if existing_requests:
             effective_retention, protected = get_effective_retention(
@@ -995,11 +976,8 @@ async def request_media_unified(
                 print_info("Tracking upcoming episodes: entire show requested", prefix="DOWNLOADS")
             else:
                 # Check if requesting the latest ongoing season
-                from src.models import TMDBSeasonCache
-                ongoing_seasons = db.query(TMDBSeasonCache).filter(
-                    TMDBSeasonCache.tmdb_id == request.tmdb_id,
-                    TMDBSeasonCache.season_status == 'ongoing'
-                ).all()
+                ongoing_seasons = [s for s in tmdb_season_cache_store.list_by_index('tmdb_id', request.tmdb_id)
+                                  if s.season_status == 'ongoing']
                 
                 if ongoing_seasons:
                     highest_ongoing = max(s.season_number for s in ongoing_seasons)
@@ -1020,14 +998,9 @@ async def request_media_unified(
             track_upcoming=1 if track_upcoming else 0
         )
         
-        db.add(media_request)
-        db.flush()
+        media_request = media_request_store.save(media_request)
         media_request_id = media_request.id
         print_monitor({"media_request_id": media_request_id, "tmdb_id": request.tmdb_id, "media_type": request.media_type}, prefix="DOWNLOADS")
-        
-        # Commit immediately to release database lock for concurrent requests
-        db.commit()
-        print_debug("MediaRequest committed - database lock released", prefix="DOWNLOADS")
         
         # ====================================================================
         # Step 6: Create Episode Retention Overrides
@@ -1042,8 +1015,7 @@ async def request_media_unified(
                     episode_number=override['episode'],
                     retention_type=override['retention_type']
                 )
-                db.add(episode_retention)
-            db.commit()
+                episode_retention_store.save(episode_retention)
             print_info(f"Created {len(request.episode_retention_overrides)} episode overrides", prefix="DOWNLOADS")
         
         # ====================================================================
@@ -1057,16 +1029,14 @@ async def request_media_unified(
         qb = get_qbittorrent_client()
         prowlarr = get_prowlarr_client()
         
-        failed_downloads = db.query(Download).filter(
-            Download.status.in_(['failed', 'partial_failed'])
-        ).all()
+        failed_ids = download_store.get_ids_by_index_multi('status', ['failed', 'partial_failed'])
+        failed_downloads = [download_store.load(id) for id in failed_ids if download_store.load(id)]
         failed_hashes = {d.torrent_hash.lower() for d in failed_downloads}
         
         if request.media_type == 'movie':
             success, download_id, torrent_info, error = await _download_torrent(
                 prowlarr=prowlarr,
                 qb=qb,
-                db=db,
                 media_type='movie',
                 title=title,
                 year=year,
@@ -1079,10 +1049,10 @@ async def request_media_unified(
             
             if not success:
                 # Re-query MediaRequest to update status
-                media_request = db.query(MediaRequest).filter(MediaRequest.id == media_request_id).first()
+                media_request = media_request_store.load(media_request_id)
                 if media_request:
                     media_request.status = 'failed'
-                    db.commit()
+                    media_request_store.save(media_request)
                 
                 print_error(f"[NOTIFICATION PLACEHOLDER] Notify user {current_user.username}: Request failed - {error}", prefix="DOWNLOADS")
                 
@@ -1098,7 +1068,6 @@ async def request_media_unified(
                 success, download_id, torrent_info, error = await _download_torrent(
                     prowlarr=prowlarr,
                     qb=qb,
-                    db=db,
                     media_type='tv',
                     title=title,
                     year=year,
@@ -1126,7 +1095,7 @@ async def request_media_unified(
         # ====================================================================
         
         print_info("[Step 7/9] Updating MediaRequest status...", prefix="DOWNLOADS")
-        media_request = db.query(MediaRequest).filter(MediaRequest.id == media_request_id).first()
+        media_request = media_request_store.load(media_request_id)
         if media_request:
             if len(download_ids) == 0:
                 # No downloads succeeded
@@ -1137,7 +1106,7 @@ async def request_media_unified(
             else:
                 # All downloads succeeded - now downloading
                 media_request.status = 'downloading'
-            db.commit()
+            media_request_store.save(media_request)
         
         # ====================================================================
         # Step 9: Notification Placeholder
@@ -1165,7 +1134,7 @@ async def request_media_unified(
 
 
 async def _download_torrent(
-    prowlarr, qb, db, media_type: str, title: str, year: int,
+    prowlarr, qb, media_type: str, title: str, year: int,
     tmdb_id: int, media_request_id: int, failed_hashes: set,
     season: Optional[int], episodes: Optional[List[int]]
 ) -> tuple:
@@ -1199,7 +1168,6 @@ async def _download_torrent(
             tmdb_id=tmdb_id if media_type == 'tv' else None,
             season_number=season,
             requested_episodes=episodes,
-            db_session=db,
             qb_client=qb
         )
         
@@ -1299,7 +1267,7 @@ async def _download_torrent(
                 
                 # Check if torrent already exists (with IntegrityError handling)
                 try:
-                    existing = db.query(Download).filter(Download.torrent_hash == info_hash).first()
+                    existing = download_store.find_by_index('torrent_hash', info_hash)
                     if existing:
                         print_info(f"Found existing Download ID {existing.id} - verifying in qBittorrent...", prefix="DOWNLOADS")
                         
@@ -1311,7 +1279,7 @@ async def _download_torrent(
                                 
                                 if not existing.media_request_id:
                                     existing.media_request_id = media_request_id
-                                    db.flush()
+                                    download_store.save(existing)
                                 
                                 return (True, existing.id, {
                                     'title': best_torrent.torrent.title,
@@ -1400,9 +1368,8 @@ async def _download_torrent(
                         media_request_id=media_request_id
                     )
                     
-                    db.add(download)
-                    db.flush()
-                    download_id = download.id  # Capture ID before commit
+                    download = download_store.save(download)
+                    download_id = download.id
                     
                     if media_type == 'tv' and season:
                         season_req = SeasonRequest(
@@ -1411,12 +1378,7 @@ async def _download_torrent(
                             episode_numbers=json.dumps(episodes) if episodes else None,
                             status='pending'
                         )
-                        db.add(season_req)
-                        db.flush()
-                    
-                    # Commit immediately to release database lock
-                    db.commit()
-                    print_debug("Download record committed - database lock released", prefix="DOWNLOADS")
+                        season_request_store.save(season_req)
                     
                     print_monitor({"download_id": download_id, "status": "created", "torrent_title": best_torrent.torrent.title}, prefix="DOWNLOADS")
                     
@@ -1431,17 +1393,16 @@ async def _download_torrent(
                         'season': season
                     }, None)
                 
-                except IntegrityError as ie:
-                    # Another thread created this torrent hash already
-                    db.rollback()
-                    print_info(f"Torrent hash collision detected, checking for existing download", prefix="DOWNLOADS")
-                    existing = db.query(Download).filter(Download.torrent_hash == info_hash).first()
+                except Exception as e:
+                    # Handle any errors during save
+                    print_error(f"Error creating Download: {e}", prefix="DOWNLOADS")
+                    # Check if it was created by another concurrent request
+                    existing = download_store.find_by_index('torrent_hash', info_hash)
                     if existing:
-                        print_info(f"Using existing Download ID: {existing.id}", prefix="DOWNLOADS")
+                        print_info(f"Download created by concurrent request - using existing Download ID: {existing.id}", prefix="DOWNLOADS")
                         if not existing.media_request_id:
                             existing.media_request_id = media_request_id
-                            db.flush()
-                            db.commit()
+                            download_store.save(existing)
                         
                         return (True, existing.id, {
                             'title': best_torrent.torrent.title,
@@ -1452,16 +1413,9 @@ async def _download_torrent(
                             'existing': True
                         }, None)
                     else:
-                        print_error(f"IntegrityError but no existing download found: {ie}", prefix="DOWNLOADS")
+                        print_error(f"Error occurred but no existing download found: {e}", prefix="DOWNLOADS")
                         failed_hashes.add(info_hash)
                         continue
-                
-                except Exception as db_error:
-                    # Handle database lock or other errors
-                    db.rollback()
-                    print_error(f"Database error creating Download: {db_error}", prefix="DOWNLOADS")
-                    failed_hashes.add(info_hash)
-                    continue
             
             except Exception as e:
                 print_error(f"[Attempt {actual_attempts}/{max_download_attempts}] Error: {e}", prefix="DOWNLOADS")
@@ -1481,8 +1435,7 @@ async def _download_torrent(
 
 @router.post("/media/search", response_model=dict)
 async def search_media(
-    request: MediaRequestModel,
-    db: Session = Depends(get_db)
+    request: MediaRequestModel
 ):
     """
     Preview torrent search results without downloading.
@@ -1538,9 +1491,8 @@ async def search_media(
             }
         
         # Get failed hashes
-        failed_downloads = db.query(Download).filter(
-            Download.status.in_(['failed', 'partial_failed'])
-        ).all()
+        failed_ids = download_store.get_ids_by_index_multi('status', ['failed', 'partial_failed'])
+        failed_downloads = [download_store.load(id) for id in failed_ids if download_store.load(id)]
         failed_hashes = {d.torrent_hash.lower() for d in failed_downloads}
         
         # Score torrents
@@ -1552,7 +1504,6 @@ async def search_media(
             tmdb_id=request.tmdb_id if request.media_type == 'tv' else None,
             season_number=request.season,
             requested_episodes=request.episodes,
-            db_session=db,
             qb_client=qb
         )
         

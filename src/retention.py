@@ -8,7 +8,9 @@ from typing import Optional, List, Dict, Tuple
 from sqlalchemy.orm import Session
 from sqlalchemy import and_, or_
 
-from src.models import MediaRequest, EpisodeRetention, Settings, Download
+from src.models import Settings
+from src.pickle_models import MediaRequest, EpisodeRetention, Download
+from src.pickle_stores import media_request_store, episode_retention_store, download_store
 from src.plex import get_plex_server
 from src.TMDB import get_tv_details, get_season_episode_count
 from src.console import print_error
@@ -38,7 +40,7 @@ def get_grace_period_days(db: Session, retention_type: str) -> int:
         return 0
 
 
-def get_effective_retention(db: Session, tmdb_id: int, media_type: str, 
+def get_effective_retention(db: Optional[Session], tmdb_id: int, media_type: str, 
                            season: Optional[int] = None, 
                            episode: Optional[int] = None) -> Tuple[str, bool]:
     """
@@ -46,11 +48,11 @@ def get_effective_retention(db: Session, tmdb_id: int, media_type: str,
     Returns (retention_type, protected_from_deletion)
     """
     # Query all media requests for this TMDB ID
-    requests = db.query(MediaRequest).filter(
-        MediaRequest.tmdb_id == tmdb_id,
-        MediaRequest.media_type == media_type,
-        MediaRequest.status != 'deleted'
-    ).all()
+    index_key = f"{tmdb_id}__{media_type}"
+    requests = [
+        r for r in media_request_store.list_by_index('tmdb_id__media_type', index_key)
+        if r.status != 'deleted'
+    ]
     
     if not requests:
         return ('watch_once', False)
@@ -60,11 +62,12 @@ def get_effective_retention(db: Session, tmdb_id: int, media_type: str,
         # Check all episode retention overrides for this episode
         episode_retentions = []
         for request in requests:
-            override = db.query(EpisodeRetention).filter(
-                EpisodeRetention.media_request_id == request.id,
-                EpisodeRetention.season_number == season,
-                EpisodeRetention.episode_number == episode
-            ).first()
+            all_ep_retentions = episode_retention_store.list_by_index('media_request_id', request.id)
+            override = next(
+                (ep for ep in all_ep_retentions 
+                 if ep.season_number == season and ep.episode_number == episode),
+                None
+            )
             if override:
                 episode_retentions.append(override.retention_type)
             else:
@@ -84,7 +87,7 @@ def get_effective_retention(db: Session, tmdb_id: int, media_type: str,
     return (most_permissive, protected)
 
 
-def track_watch_status(db: Session, plex_server, media_request: MediaRequest) -> bool:
+def track_watch_status(db: Optional[Session], plex_server, media_request: MediaRequest) -> bool:
     """
     Track watch status for a media request by querying Plex.
     Updates watched_at timestamp on first view.
@@ -101,7 +104,7 @@ def track_watch_status(db: Session, plex_server, media_request: MediaRequest) ->
                 if hasattr(movie, 'lastViewedAt') and movie.lastViewedAt:
                     if not media_request.watched_at:
                         media_request.watched_at = movie.lastViewedAt
-                        db.commit()
+                        media_request_store.save(media_request)
                         return True
         
         elif media_request.media_type == 'tv':
@@ -116,7 +119,7 @@ def track_watch_status(db: Session, plex_server, media_request: MediaRequest) ->
                     if hasattr(episode, 'lastViewedAt') and episode.lastViewedAt:
                         if not media_request.watched_at:
                             media_request.watched_at = episode.lastViewedAt
-                            db.commit()
+                            media_request_store.save(media_request)
                             return True
                         break
         
@@ -127,7 +130,7 @@ def track_watch_status(db: Session, plex_server, media_request: MediaRequest) ->
         return False
 
 
-def track_episode_watch_status(db: Session, plex_server, episode_retention: EpisodeRetention) -> bool:
+def track_episode_watch_status(db: Optional[Session], plex_server, episode_retention: EpisodeRetention) -> bool:
     """
     Track watch status for a specific episode.
     Updates watched_at timestamp on first view.
@@ -135,9 +138,7 @@ def track_episode_watch_status(db: Session, plex_server, episode_retention: Epis
     """
     try:
         # Get the parent media request
-        media_request = db.query(MediaRequest).filter(
-            MediaRequest.id == episode_retention.media_request_id
-        ).first()
+        media_request = media_request_store.load(episode_retention.media_request_id)
         
         if not media_request:
             return False
@@ -156,7 +157,7 @@ def track_episode_watch_status(db: Session, plex_server, episode_retention: Epis
                     if hasattr(episode, 'lastViewedAt') and episode.lastViewedAt:
                         if not episode_retention.watched_at:
                             episode_retention.watched_at = episode.lastViewedAt
-                            db.commit()
+                            episode_retention_store.save(episode_retention)
                             return True
                     break
         
@@ -167,7 +168,7 @@ def track_episode_watch_status(db: Session, plex_server, episode_retention: Epis
         return False
 
 
-def schedule_deletion(db: Session, media_request: MediaRequest) -> bool:
+def schedule_deletion(db: Optional[Session], media_request: MediaRequest) -> bool:
     """
     Schedule deletion for a media request based on retention policy.
     Returns True if deletion was scheduled.
@@ -178,13 +179,13 @@ def schedule_deletion(db: Session, media_request: MediaRequest) -> bool:
     
     # Get effective retention across all users
     effective_retention, protected = get_effective_retention(
-        db, media_request.tmdb_id, media_request.media_type
+        None, media_request.tmdb_id, media_request.media_type
     )
     
     # Forever retention - never schedule deletion
     if effective_retention == 'forever' or protected:
         media_request.deletion_scheduled_at = None
-        db.commit()
+        media_request_store.save(media_request)
         return False
     
     # Watch once - schedule after watch + grace period
@@ -192,7 +193,7 @@ def schedule_deletion(db: Session, media_request: MediaRequest) -> bool:
         if media_request.watched_at:
             grace_days = get_grace_period_days(db, 'watch_once')
             media_request.deletion_scheduled_at = media_request.watched_at + timedelta(days=grace_days)
-            db.commit()
+            media_request_store.save(media_request)
             return True
     
     # Watch as released (TV shows only) - handle at episode level
@@ -203,7 +204,7 @@ def schedule_deletion(db: Session, media_request: MediaRequest) -> bool:
     return False
 
 
-def schedule_episode_deletion(db: Session, media_request: MediaRequest, 
+def schedule_episode_deletion(db: Optional[Session], media_request: MediaRequest, 
                               season: int, episode: int) -> bool:
     """
     Schedule deletion for a specific episode based on retention policy.
@@ -211,22 +212,22 @@ def schedule_episode_deletion(db: Session, media_request: MediaRequest,
     Returns True if deletion was scheduled.
     """
     # Get or create episode retention record
-    episode_retention = db.query(EpisodeRetention).filter(
-        EpisodeRetention.media_request_id == media_request.id,
-        EpisodeRetention.season_number == season,
-        EpisodeRetention.episode_number == episode
-    ).first()
+    all_ep_retentions = episode_retention_store.list_by_index('media_request_id', media_request.id)
+    episode_retention = next(
+        (ep for ep in all_ep_retentions if ep.season_number == season and ep.episode_number == episode),
+        None
+    )
     
     # Get effective retention for this specific episode
     effective_retention, protected = get_effective_retention(
-        db, media_request.tmdb_id, media_request.media_type, season, episode
+        None, media_request.tmdb_id, media_request.media_type, season, episode
     )
     
     # Forever retention - never schedule deletion
     if effective_retention == 'forever' or protected:
         if episode_retention:
             episode_retention.deletion_scheduled_at = None
-            db.commit()
+            episode_retention_store.save(episode_retention)
         return False
     
     # Create episode retention if it doesn't exist (inherit from show)
@@ -237,8 +238,7 @@ def schedule_episode_deletion(db: Session, media_request: MediaRequest,
             episode_number=episode,
             retention_type=media_request.retention_type
         )
-        db.add(episode_retention)
-        db.commit()
+        episode_retention = episode_retention_store.save(episode_retention)
     
     # Already scheduled
     if episode_retention.deletion_scheduled_at:
@@ -253,7 +253,7 @@ def schedule_episode_deletion(db: Session, media_request: MediaRequest,
     # Watch once - schedule after watch + grace period
     if effective_retention == 'watch_once':
         episode_retention.deletion_scheduled_at = episode_retention.watched_at + timedelta(days=grace_days)
-        db.commit()
+        episode_retention_store.save(episode_retention)
         return True
     
     # Watch as released - check if next episode is available
@@ -275,7 +275,7 @@ def schedule_episode_deletion(db: Session, media_request: MediaRequest,
                     if air_date <= datetime.now().date():
                         # Next episode has aired, schedule deletion
                         episode_retention.deletion_scheduled_at = episode_retention.watched_at + timedelta(days=grace_days)
-                        db.commit()
+                        episode_retention_store.save(episode_retention)
                         return True
             else:
                 # Last episode of season - check if there's a next season
@@ -285,7 +285,7 @@ def schedule_episode_deletion(db: Session, media_request: MediaRequest,
                 if season >= number_of_seasons:
                     # Series ended, schedule deletion
                     episode_retention.deletion_scheduled_at = episode_retention.watched_at + timedelta(days=grace_days)
-                    db.commit()
+                    episode_retention_store.save(episode_retention)
                     return True
         except Exception as e:
             print_error(f"Error checking next episode for scheduling: {e}")
@@ -293,29 +293,28 @@ def schedule_episode_deletion(db: Session, media_request: MediaRequest,
     return False
 
 
-def recalculate_deletion_schedule(db: Session, media_request: MediaRequest) -> None:
+def recalculate_deletion_schedule(db: Optional[Session], media_request: MediaRequest) -> None:
     """
     Recalculate deletion schedule after retention type change.
     Uses current watched_at + new grace period.
     """
     # Get effective retention
     effective_retention, protected = get_effective_retention(
-        db, media_request.tmdb_id, media_request.media_type
+        None, media_request.tmdb_id, media_request.media_type
     )
     
     # Forever - clear schedule
     if effective_retention == 'forever' or protected:
         media_request.deletion_scheduled_at = None
+        media_request_store.save(media_request)
         
         # Update associated download
-        download = db.query(Download).filter(
-            Download.media_request_id == media_request.id
-        ).first()
-        if download:
+        downloads = download_store.list_by_index('media_request_id', media_request.id)
+        for download in downloads:
             download.protected_from_deletion = 1
             download.retention_type = 'forever'
+            download_store.save(download)
         
-        db.commit()
         return
     
     # Recalculate based on new retention type
@@ -323,52 +322,57 @@ def recalculate_deletion_schedule(db: Session, media_request: MediaRequest) -> N
         grace_days = get_grace_period_days(db, effective_retention)
         new_schedule = media_request.watched_at + timedelta(days=grace_days)
         media_request.deletion_scheduled_at = new_schedule
+        media_request_store.save(media_request)
         
         # Update download retention type
-        download = db.query(Download).filter(
-            Download.media_request_id == media_request.id
-        ).first()
-        if download:
+        downloads = download_store.list_by_index('media_request_id', media_request.id)
+        for download in downloads:
             download.retention_type = effective_retention
             download.protected_from_deletion = 0
-        
-        db.commit()
+            download_store.save(download)
     else:
         # Not watched yet - clear schedule
         media_request.deletion_scheduled_at = None
-        db.commit()
+        media_request_store.save(media_request)
 
 
-def get_scheduled_deletions(db: Session, user_id: Optional[int] = None, 
+def get_scheduled_deletions(db: Optional[Session], user_id: Optional[int] = None, 
                            media_type: Optional[str] = None,
                            limit: int = 100, offset: int = 0) -> List[Dict]:
     """
     Get scheduled deletions with optional filters.
     Returns list of dictionaries with deletion details.
     """
-    query = db.query(MediaRequest).filter(
-        MediaRequest.deletion_scheduled_at.isnot(None),
-        MediaRequest.auto_delete_enabled == 1,
-        MediaRequest.status != 'deleted'
-    )
+    # Get all media requests
+    all_requests = media_request_store.list()
     
+    # Filter for scheduled deletions
+    requests = [
+        req for req in all_requests
+        if req.deletion_scheduled_at is not None
+        and req.auto_delete_enabled == 1
+        and req.status != 'deleted'
+    ]
+    
+    # Apply user_id filter
     if user_id:
-        query = query.filter(MediaRequest.user_id == user_id)
+        requests = [req for req in requests if req.user_id == user_id]
     
+    # Apply media_type filter
     if media_type:
-        query = query.filter(MediaRequest.media_type == media_type)
+        requests = [req for req in requests if req.media_type == media_type]
     
-    # Order by scheduled deletion date
-    query = query.order_by(MediaRequest.deletion_scheduled_at.asc())
+    # Sort by deletion_scheduled_at
+    requests.sort(key=lambda x: x.deletion_scheduled_at)
     
     # Apply pagination
-    requests = query.limit(limit).offset(offset).all()
+    requests = requests[offset:offset + limit]
     
     results = []
     for request in requests:
         # Get effective retention
         effective_retention, _ = get_effective_retention(
-            db, request.tmdb_id, request.media_type
+            None, request.tmdb_id, request.media_type
         )
         
         results.append({
@@ -388,15 +392,19 @@ def get_scheduled_deletions(db: Session, user_id: Optional[int] = None,
     return results
 
 
-def get_scheduled_episode_deletions(db: Session, media_request_id: int) -> List[Dict]:
+def get_scheduled_episode_deletions(db: Optional[Session], media_request_id: int) -> List[Dict]:
     """Get scheduled episode deletions for a TV show request."""
-    episodes = db.query(EpisodeRetention).filter(
-        EpisodeRetention.media_request_id == media_request_id,
-        EpisodeRetention.deletion_scheduled_at.isnot(None)
-    ).order_by(
-        EpisodeRetention.season_number.asc(),
-        EpisodeRetention.episode_number.asc()
-    ).all()
+    # Get episodes for this media request
+    episodes = episode_retention_store.list_by_index('media_request_id', str(media_request_id))
+    
+    # Filter for scheduled deletions
+    episodes = [
+        ep for ep in episodes
+        if ep.deletion_scheduled_at is not None
+    ]
+    
+    # Sort by season and episode number
+    episodes.sort(key=lambda x: (x.season_number, x.episode_number))
     
     return [
         {
@@ -412,15 +420,13 @@ def get_scheduled_episode_deletions(db: Session, media_request_id: int) -> List[
     ]
 
 
-def cancel_scheduled_deletion(db: Session, media_request_id: int) -> bool:
+def cancel_scheduled_deletion(db: Optional[Session], media_request_id: int) -> bool:
     """Cancel a scheduled deletion by disabling auto-delete."""
-    media_request = db.query(MediaRequest).filter(
-        MediaRequest.id == media_request_id
-    ).first()
+    media_request = media_request_store.load(str(media_request_id))
     
     if media_request:
         media_request.auto_delete_enabled = 0
-        db.commit()
+        media_request_store.save(media_request)
         return True
     
     return False

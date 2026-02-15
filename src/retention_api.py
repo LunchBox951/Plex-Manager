@@ -11,7 +11,9 @@ from sqlalchemy.orm import Session
 
 from src.database import get_db
 from src.auth import get_current_user, require_admin
-from src.models import User, MediaRequest, EpisodeRetention, Settings, Download
+from src.models import User, Settings
+from src.pickle_models import MediaRequest, EpisodeRetention, Download
+from src.pickle_stores import media_request_store, episode_retention_store, download_store
 from src.retention import (
     get_effective_retention,
     schedule_deletion,
@@ -87,8 +89,7 @@ class MediaRequestResponse(BaseModel):
 @router.post("/requests", response_model=MediaRequestResponse, status_code=status.HTTP_201_CREATED)
 async def create_media_request(
     request_data: MediaRequestCreate,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    current_user: User = Depends(get_current_user)
 ):
     """
     Create a new media request with retention policy.
@@ -102,15 +103,15 @@ async def create_media_request(
         )
     
     # Check for existing requests
-    existing_requests = db.query(MediaRequest).filter(
-        MediaRequest.tmdb_id == request_data.tmdb_id,
-        MediaRequest.media_type == request_data.media_type,
-        MediaRequest.status != 'deleted'
-    ).all()
+    index_key = f"{request_data.tmdb_id}__{request_data.media_type}"
+    existing_requests = [
+        r for r in media_request_store.list_by_index('tmdb_id__media_type', index_key)
+        if r.status != 'deleted'
+    ]
     
     # Determine effective retention across all users
     effective_retention, protected = get_effective_retention(
-        db, request_data.tmdb_id, request_data.media_type
+        None, request_data.tmdb_id, request_data.media_type
     )
     
     # Create new media request
@@ -124,8 +125,7 @@ async def create_media_request(
         status='pending'
     )
     
-    db.add(media_request)
-    db.flush()  # Get ID without committing
+    media_request = media_request_store.save(media_request)
     
     # Create episode retention overrides for TV shows
     if request_data.media_type == 'tv' and request_data.episode_retention_overrides:
@@ -136,15 +136,12 @@ async def create_media_request(
                 episode_number=override.episode,
                 retention_type=override.retention_type
             )
-            db.add(episode_retention)
-    
-    db.commit()
-    db.refresh(media_request)
+            episode_retention_store.save(episode_retention)
     
     # Log retention conflict if exists
     if existing_requests:
         new_effective, _ = get_effective_retention(
-            db, request_data.tmdb_id, request_data.media_type
+            None, request_data.tmdb_id, request_data.media_type
         )
         if new_effective != effective_retention:
             print_info(f"Retention conflict resolved for {request_data.title}: "
@@ -159,20 +156,23 @@ async def list_media_requests(
     status: Optional[str] = None,
     limit: int = 50,
     offset: int = 0,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    current_user: User = Depends(get_current_user)
 ):
     """List user's media requests with optional filters."""
-    query = db.query(MediaRequest).filter(MediaRequest.user_id == current_user.id)
+    all_requests = media_request_store.list_by_index('user_id', current_user.id)
     
+    # Apply filters
+    filtered = all_requests
     if media_type:
-        query = query.filter(MediaRequest.media_type == media_type)
-    
+        filtered = [r for r in filtered if r.media_type == media_type]
     if status:
-        query = query.filter(MediaRequest.status == status)
+        filtered = [r for r in filtered if r.status == status]
     
-    query = query.order_by(MediaRequest.requested_at.desc())
-    requests = query.limit(limit).offset(offset).all()
+    # Sort by requested_at descending
+    filtered.sort(key=lambda r: r.requested_at if r.requested_at else datetime.min, reverse=True)
+    
+    # Apply pagination
+    requests = filtered[offset:offset+limit]
     
     return requests
 
@@ -180,15 +180,14 @@ async def list_media_requests(
 @router.get("/requests/by-media")
 async def get_request_by_media(
     tmdb_id: int,
-    db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
     """Get user's request for specific media by TMDB ID."""
-    media_request = db.query(MediaRequest).filter(
-        MediaRequest.tmdb_id == tmdb_id,
-        MediaRequest.user_id == current_user.id,
-        MediaRequest.status != 'deleted'
-    ).first()
+    user_requests = media_request_store.list_by_index('user_id', current_user.id)
+    media_request = next(
+        (r for r in user_requests if r.tmdb_id == tmdb_id and r.status != 'deleted'),
+        None
+    )
     
     if not media_request:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Request not found")
@@ -196,9 +195,7 @@ async def get_request_by_media(
     # Get episode overrides if TV show
     episode_overrides = []
     if media_request.media_type == 'tv':
-        overrides = db.query(EpisodeRetention).filter(
-            EpisodeRetention.media_request_id == media_request.id
-        ).all()
+        overrides = episode_retention_store.list_by_index('media_request_id', media_request.id)
         episode_overrides = [override.to_dict() for override in overrides]
     
     return {
@@ -210,29 +207,23 @@ async def get_request_by_media(
 @router.get("/requests/{request_id}", response_model=dict)
 async def get_media_request(
     request_id: int,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    current_user: User = Depends(get_current_user)
 ):
     """Get detailed information about a specific request."""
-    media_request = db.query(MediaRequest).filter(
-        MediaRequest.id == request_id,
-        MediaRequest.user_id == current_user.id
-    ).first()
+    media_request = media_request_store.load(request_id)
     
-    if not media_request:
+    if not media_request or media_request.user_id != current_user.id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Request not found")
     
     # Get episode overrides if TV show
     episode_overrides = []
     if media_request.media_type == 'tv':
-        overrides = db.query(EpisodeRetention).filter(
-            EpisodeRetention.media_request_id == request_id
-        ).all()
+        overrides = episode_retention_store.list_by_index('media_request_id', request_id)
         episode_overrides = [override.to_dict() for override in overrides]
     
     # Get effective retention
     effective_retention, protected = get_effective_retention(
-        db, media_request.tmdb_id, media_request.media_type
+        None, media_request.tmdb_id, media_request.media_type
     )
     
     return {
@@ -283,11 +274,11 @@ async def create_available_request(
         )
     
     # Check for existing request
-    existing = db.query(MediaRequest).filter(
-        MediaRequest.tmdb_id == request_data.tmdb_id,
-        MediaRequest.user_id == current_user.id,
-        MediaRequest.status != 'deleted'
-    ).first()
+    user_requests = media_request_store.list_by_index('user_id', current_user.id)
+    existing = next(
+        (r for r in user_requests if r.tmdb_id == request_data.tmdb_id and r.status != 'deleted'),
+        None
+    )
     
     if existing:
         return existing.to_dict()
@@ -304,9 +295,7 @@ async def create_available_request(
         completed_at=datetime.utcnow()
     )
     
-    db.add(media_request)
-    db.commit()
-    db.refresh(media_request)
+    media_request = media_request_store.save(media_request)
     
     print_info(f"Created available request for {title} (User: {current_user.username})", prefix="Request")
     
@@ -322,12 +311,9 @@ async def update_retention_type(
     db: Session = Depends(get_db)
 ):
     """Update retention type for a request with audit logging."""
-    media_request = db.query(MediaRequest).filter(
-        MediaRequest.id == request_id,
-        MediaRequest.user_id == current_user.id
-    ).first()
+    media_request = media_request_store.load(request_id)
     
-    if not media_request:
+    if not media_request or media_request.user_id != current_user.id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Request not found")
     
     # Validate watch_as_released only for TV shows
@@ -344,9 +330,9 @@ async def update_retention_type(
     media_request.retention_type = update_data.retention_type
     
     # Recalculate deletion schedule
-    recalculate_deletion_schedule(db, media_request)
+    recalculate_deletion_schedule(None, media_request)
     
-    db.commit()
+    media_request_store.save(media_request)
     
     # Log the change
     log_action(
@@ -378,12 +364,9 @@ async def set_episode_retention(
     db: Session = Depends(get_db)
 ):
     """Set retention override for a specific episode."""
-    media_request = db.query(MediaRequest).filter(
-        MediaRequest.id == request_id,
-        MediaRequest.user_id == current_user.id
-    ).first()
+    media_request = media_request_store.load(request_id)
     
-    if not media_request:
+    if not media_request or media_request.user_id != current_user.id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Request not found")
     
     if media_request.media_type != 'tv':
@@ -393,11 +376,11 @@ async def set_episode_retention(
         )
     
     # Get or create episode retention
-    episode_retention = db.query(EpisodeRetention).filter(
-        EpisodeRetention.media_request_id == request_id,
-        EpisodeRetention.season_number == season,
-        EpisodeRetention.episode_number == episode
-    ).first()
+    all_ep_retentions = episode_retention_store.list_by_index('media_request_id', request_id)
+    episode_retention = next(
+        (ep for ep in all_ep_retentions if ep.season_number == season and ep.episode_number == episode),
+        None
+    )
     
     if episode_retention:
         episode_retention.retention_type = update_data.retention_type
@@ -408,13 +391,11 @@ async def set_episode_retention(
             episode_number=episode,
             retention_type=update_data.retention_type
         )
-        db.add(episode_retention)
     
-    db.commit()
-    db.refresh(episode_retention)
+    episode_retention = episode_retention_store.save(episode_retention)
     
     # Recalculate episode deletion schedule
-    schedule_episode_deletion(db, media_request, season, episode)
+    schedule_episode_deletion(None, media_request, season, episode)
     
     return {"message": "Episode retention updated", "episode": episode_retention.to_dict()}
 
@@ -424,12 +405,11 @@ async def get_user_scheduled_deletions(
     media_type: Optional[str] = None,
     limit: int = 100,
     offset: int = 0,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    current_user: User = Depends(get_current_user)
 ):
     """Get user's upcoming scheduled deletions."""
     deletions = get_scheduled_deletions(
-        db,
+        None,
         user_id=current_user.id,
         media_type=media_type,
         limit=limit,
@@ -445,19 +425,15 @@ async def get_user_scheduled_deletions(
 @router.delete("/scheduled-deletions/{request_id}/cancel")
 async def cancel_deletion(
     request_id: int,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    current_user: User = Depends(get_current_user)
 ):
     """Cancel a scheduled deletion."""
-    media_request = db.query(MediaRequest).filter(
-        MediaRequest.id == request_id,
-        MediaRequest.user_id == current_user.id
-    ).first()
+    media_request = media_request_store.load(request_id)
     
-    if not media_request:
+    if not media_request or media_request.user_id != current_user.id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Request not found")
     
-    success = cancel_scheduled_deletion(db, request_id)
+    success = cancel_scheduled_deletion(None, request_id)
     
     if success:
         return {"message": "Deletion cancelled successfully"}
@@ -539,32 +515,38 @@ async def get_all_scheduled_deletions(
     user_id: Optional[int] = None,
     limit: int = 100,
     offset: int = 0,
-    current_user: User = Depends(require_admin),
-    db: Session = Depends(get_db)
+    current_user: User = Depends(require_admin)
 ):
     """View all scheduled deletions across all users (admin only)."""
-    query = db.query(MediaRequest).filter(
-        MediaRequest.deletion_scheduled_at.isnot(None),
-        MediaRequest.auto_delete_enabled == 1,
-        MediaRequest.status != 'deleted'
-    )
+    all_requests = media_request_store.list_all()
     
+    # Filter for scheduled deletions
+    scheduled = [
+        r for r in all_requests
+        if r.deletion_scheduled_at is not None
+        and r.auto_delete_enabled == 1
+        and r.status != 'deleted'
+    ]
+    
+    # Apply additional filters
+    filtered = scheduled
     if media_type:
-        query = query.filter(MediaRequest.media_type == media_type)
-    
+        filtered = [r for r in filtered if r.media_type == media_type]
     if retention_type:
-        query = query.filter(MediaRequest.retention_type == retention_type)
-    
+        filtered = [r for r in filtered if r.retention_type == retention_type]
     if user_id:
-        query = query.filter(MediaRequest.user_id == user_id)
+        filtered = [r for r in filtered if r.user_id == user_id]
     
-    query = query.order_by(MediaRequest.deletion_scheduled_at.asc())
-    requests = query.limit(limit).offset(offset).all()
+    # Sort by deletion_scheduled_at ascending
+    filtered.sort(key=lambda r: r.deletion_scheduled_at if r.deletion_scheduled_at else datetime.max)
+    
+    # Apply pagination
+    requests = filtered[offset:offset+limit]
     
     results = []
     for request in requests:
         effective_retention, _ = get_effective_retention(
-            db, request.tmdb_id, request.media_type
+            None, request.tmdb_id, request.media_type
         )
         
         data = request.to_dict()
@@ -580,50 +562,47 @@ async def get_all_scheduled_deletions(
 
 @router.get("/admin/retention/stats")
 async def get_retention_stats(
-    current_user: User = Depends(require_admin),
-    db: Session = Depends(get_db)
+    current_user: User = Depends(require_admin)
 ):
     """Get retention system statistics (admin only)."""
     from datetime import timedelta
     
-    total_requests = db.query(MediaRequest).filter(
-        MediaRequest.status != 'deleted'
-    ).count()
+    all_requests = media_request_store.list_all()
+    active_requests = [r for r in all_requests if r.status != 'deleted']
+    
+    total_requests = len(active_requests)
     
     # Count by retention type
     by_retention = {}
     for retention_type in ['forever', 'watch_once', 'watch_as_released']:
-        count = db.query(MediaRequest).filter(
-            MediaRequest.retention_type == retention_type,
-            MediaRequest.status != 'deleted'
-        ).count()
+        count = len([r for r in active_requests if r.retention_type == retention_type])
         by_retention[retention_type] = count
     
     # Count scheduled deletions
     now = datetime.utcnow()
-    next_7_days = db.query(MediaRequest).filter(
-        MediaRequest.deletion_scheduled_at.between(now, now + timedelta(days=7)),
-        MediaRequest.auto_delete_enabled == 1,
-        MediaRequest.status != 'deleted'
-    ).count()
+    next_7_days_threshold = now + timedelta(days=7)
+    next_30_days_threshold = now + timedelta(days=30)
     
-    next_30_days = db.query(MediaRequest).filter(
-        MediaRequest.deletion_scheduled_at.between(now, now + timedelta(days=30)),
-        MediaRequest.auto_delete_enabled == 1,
-        MediaRequest.status != 'deleted'
-    ).count()
+    scheduled_requests = [
+        r for r in active_requests
+        if r.deletion_scheduled_at is not None
+        and r.auto_delete_enabled == 1
+    ]
     
-    total_scheduled = db.query(MediaRequest).filter(
-        MediaRequest.deletion_scheduled_at.isnot(None),
-        MediaRequest.auto_delete_enabled == 1,
-        MediaRequest.status != 'deleted'
-    ).count()
+    next_7_days = len([
+        r for r in scheduled_requests
+        if now <= r.deletion_scheduled_at <= next_7_days_threshold
+    ])
+    
+    next_30_days = len([
+        r for r in scheduled_requests
+        if now <= r.deletion_scheduled_at <= next_30_days_threshold
+    ])
+    
+    total_scheduled = len(scheduled_requests)
     
     # Count protected items
-    protected_items = db.query(MediaRequest).filter(
-        MediaRequest.retention_type == 'forever',
-        MediaRequest.status != 'deleted'
-    ).count()
+    protected_items = len([r for r in active_requests if r.retention_type == 'forever'])
     
     return {
         "total_requests": total_requests,

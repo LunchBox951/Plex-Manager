@@ -750,8 +750,7 @@ if __name__ != '__main__':
 
 def get_season_episode_count(
     tmdb_id: int,
-    season_number: int,
-    db_session
+    season_number: int
 ) -> Optional[int]:
     """
     Get episode count for a TV season with intelligent caching.
@@ -763,26 +762,21 @@ def get_season_episode_count(
     Args:
         tmdb_id: TMDB TV show ID
         season_number: Season number
-        db_session: SQLAlchemy database session
         
     Returns:
         Episode count or None if failed
         
     Example:
-        >>> from src.database import get_db
-        >>> db = next(get_db())
-        >>> count = get_season_episode_count(1396, 1, db)  # Breaking Bad S01
+        >>> count = get_season_episode_count(1396, 1)  # Breaking Bad S01
         >>> print(count)  # 7
     """
-    from src.models import TMDBSeasonCache
+    from src.pickle_stores import tmdb_season_cache_store
     
     print_info(f"TMDB: Getting episode count for show {tmdb_id} Season {season_number}")
     
     # Check cache first
-    cache_entry = db_session.query(TMDBSeasonCache).filter(
-        TMDBSeasonCache.tmdb_id == tmdb_id,
-        TMDBSeasonCache.season_number == season_number
-    ).first()
+    index_key = f"{tmdb_id}__{season_number}"
+    cache_entry = tmdb_season_cache_store.find_by_index('tmdb_id__season_number', index_key)
     
     current_date = date.today()
     
@@ -834,41 +828,41 @@ def get_season_episode_count(
         print_info(f"TMDB: Season status: {season_status}, next air date: {next_episode_air_date}")
         
         # Update or create cache entry
+        from src.pickle_models import TMDBSeasonCache as PMTMDBSeasonCache
         if cache_entry:
             cache_entry.episode_count = episode_count
             cache_entry.season_status = season_status
             cache_entry.next_episode_air_date = next_episode_air_date
             cache_entry.updated_at = datetime.utcnow()
         else:
-            cache_entry = TMDBSeasonCache(
+            import uuid
+            cache_entry = PMTMDBSeasonCache(
+                id=str(uuid.uuid4()),
                 tmdb_id=tmdb_id,
                 season_number=season_number,
                 episode_count=episode_count,
                 season_status=season_status,
-                next_episode_air_date=next_episode_air_date
+                next_episode_air_date=next_episode_air_date,
+                created_at=datetime.utcnow(),
+                updated_at=datetime.utcnow()
             )
-            db_session.add(cache_entry)
         
-        db_session.commit()
+        tmdb_season_cache_store.save(cache_entry)
         print_success(f"TMDB: Cached episode count: {episode_count} (status: {season_status})")
         
         return episode_count
     
     except Exception as e:
         print_error(f"Failed to fetch season info from TMDB: {e}")
-        db_session.rollback()
         return None
 
 
-def refresh_ongoing_seasons_cache(db_session) -> int:
+def refresh_ongoing_seasons_cache() -> int:
     """
     Background job to refresh ongoing season caches.
     
     Queries all TMDBCache entries with status='ongoing' and next_episode_air_date <= today,
     then updates their episode counts from TMDB API.
-    
-    Args:
-        db_session: SQLAlchemy database session
         
     Returns:
         Number of cache entries refreshed
@@ -877,24 +871,27 @@ def refresh_ongoing_seasons_cache(db_session) -> int:
         >>> from apscheduler.schedulers.background import BackgroundScheduler
         >>> scheduler = BackgroundScheduler()
         >>> scheduler.add_job(
-        ...     func=lambda: refresh_ongoing_seasons_cache(next(get_db())),
+        ...     func=refresh_ongoing_seasons_cache,
         ...     trigger='cron',
         ...     hour=2,
         ...     minute=0
         ... )
         >>> scheduler.start()
     """
-    from src.models import TMDBSeasonCache
+    from src.pickle_stores import tmdb_season_cache_store
     
     current_date = date.today()
     print_info(f"TMDB: Refreshing ongoing season caches (date: {current_date})")
     
     try:
         # Find ongoing seasons that need refresh
-        expired_entries = db_session.query(TMDBSeasonCache).filter(
-            TMDBSeasonCache.season_status == 'ongoing',
-            TMDBSeasonCache.next_episode_air_date <= current_date
-        ).all()
+        all_entries = tmdb_season_cache_store.list()
+        expired_entries = [
+            entry for entry in all_entries
+            if entry.season_status == 'ongoing'
+            and entry.next_episode_air_date
+            and entry.next_episode_air_date <= current_date
+        ]
         
         print_info(f"TMDB: Found {len(expired_entries)} ongoing seasons to refresh")
         
@@ -935,6 +932,8 @@ def refresh_ongoing_seasons_cache(db_session) -> int:
                 entry.next_episode_air_date = next_episode_air_date
                 entry.updated_at = datetime.utcnow()
                 
+                tmdb_season_cache_store.save(entry)
+                
                 print_info(f"TMDB: Refreshed show {entry.tmdb_id} S{entry.season_number}: "
                           f"{episode_count} episodes, status: {season_status}")
                 
@@ -944,13 +943,11 @@ def refresh_ongoing_seasons_cache(db_session) -> int:
                 print_error(f"Failed to refresh cache entry: {e}")
                 continue
         
-        db_session.commit()
         print_success(f"TMDB: Successfully refreshed {refreshed_count} ongoing season caches")
         return refreshed_count
     
     except Exception as e:
         print_error(f"Failed to refresh ongoing seasons: {e}")
-        db_session.rollback()
         return 0
 
 
@@ -1061,42 +1058,34 @@ async def get_or_fetch_trending(media_type: str, time_window: str = 'week', page
         Dict with 'results', 'page', 'total_pages', 'total_results'
     """
     import hashlib
-    from src.database import get_db
-    from src.models import TMDBCache
+    from src.pickle_stores import tmdb_cache_store
     
     # Generate cache key with page number
     cache_key = hashlib.md5(f"trending_{media_type}_{time_window}_page{page}".encode()).hexdigest()
     
     # Check database cache if not forcing refresh
     if not force_refresh:
-        db = next(get_db())
-        try:
-            cache_entry = db.query(TMDBCache).filter(
-                TMDBCache.cache_key == cache_key,
-                TMDBCache.expires_at > datetime.utcnow()
-            ).first()
+        cache_entry = tmdb_cache_store.load(cache_key)
+        
+        if cache_entry and cache_entry.expires_at > datetime.utcnow():
+            print_info(f"TMDB: Cache hit for trending {media_type} page {page}")
+            cached_data = json.loads(cache_entry.data_json)
             
-            if cache_entry:
-                print_info(f"TMDB: Cache hit for trending {media_type} page {page}")
-                cached_data = json.loads(cache_entry.data_json)
-                
-                # Extract results from cached data
-                results = cached_data.get('results', []) if isinstance(cached_data, dict) else cached_data
-                
-                # Verify image files exist and download if missing
-                download_tasks = []
-                for item in results:
-                    if item.get('poster_path'):
-                        download_tasks.append(download_image(item['poster_path'], 'w500', 'trending'))
-                    if item.get('backdrop_path'):
-                        download_tasks.append(download_image(item['backdrop_path'], 'w500', 'trending'))
-                
-                if download_tasks:
-                    await asyncio.gather(*download_tasks, return_exceptions=True)
-                
-                return cached_data
-        finally:
-            db.close()
+            # Extract results from cached data
+            results = cached_data.get('results', []) if isinstance(cached_data, dict) else cached_data
+            
+            # Verify image files exist and download if missing
+            download_tasks = []
+            for item in results:
+                if item.get('poster_path'):
+                    download_tasks.append(download_image(item['poster_path'], 'w500', 'trending'))
+                if item.get('backdrop_path'):
+                    download_tasks.append(download_image(item['backdrop_path'], 'w500', 'trending'))
+            
+            if download_tasks:
+                await asyncio.gather(*download_tasks, return_exceptions=True)
+            
+            return cached_data
     
     # Fetch from TMDB API
     print_info(f"TMDB: Fetching trending {media_type} from API page {page}")
@@ -1123,37 +1112,35 @@ async def get_or_fetch_trending(media_type: str, time_window: str = 'week', page
         await asyncio.gather(*download_tasks, return_exceptions=True)
     
     # Store in database cache with 7-day TTL
-    db = next(get_db())
-    try:
-        expires_at = datetime.utcnow() + timedelta(days=7)
-        
-        # Prepare full response data with pagination
-        response_data = {
-            'results': results,
-            'page': trending_data.get('page', page),
-            'total_pages': trending_data.get('total_pages', 1),
-            'total_results': trending_data.get('total_results', len(results))
-        }
-        
-        # Update or create cache entry
-        cache_entry = db.query(TMDBCache).filter(TMDBCache.cache_key == cache_key).first()
-        if cache_entry:
-            cache_entry.data_json = json.dumps(response_data)
-            cache_entry.expires_at = expires_at
-            cache_entry.created_at = datetime.utcnow()
-        else:
-            cache_entry = TMDBCache(
-                cache_key=cache_key,
-                cache_type='trending',
-                data_json=json.dumps(response_data),
-                expires_at=expires_at
-            )
-            db.add(cache_entry)
-        
-        db.commit()
-        print_success(f"TMDB: Cached trending {media_type} page {page} until {expires_at}")
-    finally:
-        db.close()
+    from src.pickle_models import TMDBCache as PMTMDBCache
+    expires_at = datetime.utcnow() + timedelta(days=7)
+    
+    # Prepare full response data with pagination
+    response_data = {
+        'results': results,
+        'page': trending_data.get('page', page),
+        'total_pages': trending_data.get('total_pages', 1),
+        'total_results': trending_data.get('total_results', len(results))
+    }
+    
+    # Update or create cache entry
+    cache_entry = tmdb_cache_store.load(cache_key)
+    if cache_entry:
+        cache_entry.data_json = json.dumps(response_data)
+        cache_entry.expires_at = expires_at
+        cache_entry.created_at = datetime.utcnow()
+    else:
+        cache_entry = PMTMDBCache(
+            id=cache_key,
+            cache_key=cache_key,
+            cache_type='trending',
+            data_json=json.dumps(response_data),
+            expires_at=expires_at,
+            created_at=datetime.utcnow()
+        )
+    
+    tmdb_cache_store.save(cache_entry)
+    print_success(f"TMDB: Cached trending {media_type} page {page} until {expires_at}")
     
     return response_data
 
@@ -1172,8 +1159,8 @@ async def get_or_fetch_search(query: str, user_id: int, page: int = 1, media_typ
         Dictionary with 'movies' and 'tv' arrays containing search results
     """
     import hashlib
-    from src.database import get_db
-    from src.models import TMDBCache, SearchCache
+    from src.pickle_stores import tmdb_cache_store, search_cache_store
+    from src.pickle_models import SearchCache as PMSearchCache
     
     # Normalize query
     normalized_query = _normalize_query(query)
@@ -1182,41 +1169,36 @@ async def get_or_fetch_search(query: str, user_id: int, page: int = 1, media_typ
     cache_key = hashlib.md5(f"search_{normalized_query}_{page}_{media_type}".encode()).hexdigest()
     
     # Check database cache
-    db = next(get_db())
-    try:
-        cache_entry = db.query(TMDBCache).filter(
-            TMDBCache.cache_key == cache_key,
-            TMDBCache.expires_at > datetime.utcnow()
-        ).first()
+    cache_entry = tmdb_cache_store.load(cache_key)
+    
+    if cache_entry and cache_entry.expires_at > datetime.utcnow():
+        print_info(f"TMDB: Cache hit for search: {query} (page {page})")
+        cached_results = json.loads(cache_entry.data_json)
         
-        if cache_entry:
-            print_info(f"TMDB: Cache hit for search: {query} (page {page})")
-            cached_results = json.loads(cache_entry.data_json)
-            
-            # Verify image files exist and download if missing
-            download_tasks = []
-            for media_list in [cached_results.get('movies', {}).get('results', []), cached_results.get('tv', {}).get('results', [])]:
-                for item in media_list:
-                    if item.get('poster_path'):
-                        download_tasks.append(download_image(item['poster_path'], 'w500', 'search'))
-                    if item.get('backdrop_path'):
-                        download_tasks.append(download_image(item['backdrop_path'], 'w500', 'search'))
-            
-            if download_tasks:
-                await asyncio.gather(*download_tasks, return_exceptions=True)
-            
-            # Record search in user history
-            search_cache = SearchCache(
-                user_id=user_id,
-                query=normalized_query,
-                cache_key=cache_key
-            )
-            db.add(search_cache)
-            db.commit()
-            
-            return cached_results
-    finally:
-        db.close()
+        # Verify image files exist and download if missing
+        download_tasks = []
+        for media_list in [cached_results.get('movies', {}).get('results', []), cached_results.get('tv', {}).get('results', [])]:
+            for item in media_list:
+                if item.get('poster_path'):
+                    download_tasks.append(download_image(item['poster_path'], 'w500', 'search'))
+                if item.get('backdrop_path'):
+                    download_tasks.append(download_image(item['backdrop_path'], 'w500', 'search'))
+        
+        if download_tasks:
+            await asyncio.gather(*download_tasks, return_exceptions=True)
+        
+        # Record search in user history
+        import uuid
+        search_cache = PMSearchCache(
+            id=str(uuid.uuid4()),
+            user_id=user_id,
+            query=normalized_query,
+            cache_key=cache_key,
+            created_at=datetime.utcnow()
+        )
+        search_cache_store.save(search_cache)
+        
+        return cached_results
     
     # Fetch from TMDB API
     print_info(f"TMDB: Searching for: {query} (page {page})")
@@ -1282,30 +1264,32 @@ async def get_or_fetch_search(query: str, user_id: int, page: int = 1, media_typ
         await asyncio.gather(*download_tasks, return_exceptions=True)
     
     # Store in database cache with 24-hour TTL
-    db = next(get_db())
-    try:
-        expires_at = datetime.utcnow() + timedelta(hours=24)
-        
-        cache_entry = TMDBCache(
-            cache_key=cache_key,
-            cache_type='search',
-            data_json=json.dumps(results),
-            expires_at=expires_at
-        )
-        db.add(cache_entry)
-        
-        # Record in user search history
-        search_cache = SearchCache(
-            user_id=user_id,
-            query=normalized_query,
-            cache_key=cache_key
-        )
-        db.add(search_cache)
-        
-        db.commit()
-        print_success(f"TMDB: Cached search '{query}' until {expires_at}")
-    finally:
-        db.close()
+    from src.pickle_models import TMDBCache as PMTMDBCache, SearchCache as PMSearchCache
+    import uuid
+    
+    expires_at = datetime.utcnow() + timedelta(hours=24)
+    
+    cache_entry = PMTMDBCache(
+        id=cache_key,
+        cache_key=cache_key,
+        cache_type='search',
+        data_json=json.dumps(results),
+        expires_at=expires_at,
+        created_at=datetime.utcnow()
+    )
+    tmdb_cache_store.save(cache_entry)
+    
+    # Record in user search history
+    search_cache = PMSearchCache(
+        id=str(uuid.uuid4()),
+        user_id=user_id,
+        query=normalized_query,
+        cache_key=cache_key,
+        created_at=datetime.utcnow()
+    )
+    search_cache_store.save(search_cache)
+    
+    print_success(f"TMDB: Cached search '{query}' until {expires_at}")
     
     return results
 
