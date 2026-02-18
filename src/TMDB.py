@@ -473,6 +473,7 @@ def get_movie_details(tmdb_id: int) -> Dict[str, Any]:
         'vote_average': movie.vote_average,
         'genres': [genre['name'] for genre in movie.genres] if movie.genres else [],
         'tagline': movie.tagline,
+        'original_language': movie.original_language if hasattr(movie, 'original_language') else None,
     }
     
     # Cache for future requests
@@ -528,6 +529,8 @@ def get_tv_details(tmdb_id: int) -> Dict[str, Any]:
         'backdrop_path': show.backdrop_path,
         'vote_average': show.vote_average,
         'genres': [genre['name'] for genre in show.genres] if show.genres else [],
+        'origin_country': list(show.origin_country) if hasattr(show, 'origin_country') else [],
+        'original_language': show.original_language if hasattr(show, 'original_language') else None,
         'seasons': [
             {
                 'season_number': season['season_number'],
@@ -542,6 +545,31 @@ def get_tv_details(tmdb_id: int) -> Dict[str, Any]:
     _set_global_cache(cache_key, details, cache_type='request')
     
     return details
+
+
+def is_anime(tmdb_details: Dict[str, Any]) -> bool:
+    """
+    Detect if a TV show is anime based on TMDB metadata.
+    
+    Detection criteria:
+    - Primary: Origin country contains 'JP' (Japan)
+    - Secondary: Genres include 'Animation'
+    
+    Args:
+        tmdb_details: TV show details from get_tv_details()
+        
+    Returns:
+        True if show is anime, False otherwise
+    """
+    # Check origin country for Japan
+    origin_country = tmdb_details.get('origin_country', [])
+    if 'JP' in origin_country:
+        # Confirm it's animation genre
+        genres = tmdb_details.get('genres', [])
+        if 'Animation' in genres:
+            return True
+    
+    return False
 
 
 def get_trending(media_type: str = 'all', time_window: str = 'week', page: int = 1) -> Dict[str, Any]:

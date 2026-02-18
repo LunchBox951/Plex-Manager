@@ -57,6 +57,16 @@ EPISODE_COUNT_PATTERNS = [
 MIN_SEEDERS = 5
 MIN_SIZE_MB = 100
 
+# Dual audio detection patterns
+DUAL_AUDIO_PATTERNS = [
+    r'\bdual[\s\-_]*audio\b',
+    r'\bmulti[\s\-_]*audio\b',
+    r'\bmulti\b',  # "MULTi" is common
+    r'eng\+jpn|jpn\+eng',
+    r'\[dual[\s\-_]*audio\]',
+    r'\(dual[\s\-_]*audio\)',
+]
+
 
 @dataclass
 class ScoredTorrent:
@@ -90,6 +100,25 @@ def extract_resolution(title: str) -> Optional[str]:
         return '2160p'
     
     return None
+
+
+def has_dual_audio(title: str) -> bool:
+    """
+    Detect if torrent has dual audio (multiple language tracks).
+    
+    Common patterns: "Dual Audio", "Multi Audio", "ENG+JPN", etc.
+    
+    Args:
+        title: Torrent title
+        
+    Returns:
+        True if dual audio detected, False otherwise
+    """
+    title_lower = title.lower()
+    for pattern in DUAL_AUDIO_PATTERNS:
+        if re.search(pattern, title_lower):
+            return True
+    return False
 
 
 def is_blocked_release(title: str) -> bool:
@@ -325,14 +354,15 @@ def get_episode_count(
     return None
 
 
-def calculate_base_score(torrent: TorrentResult) -> float:
+def calculate_base_score(torrent: TorrentResult, original_language: Optional[str] = None) -> float:
     """
     Calculate base torrent score using seeders/size ratio and resolution.
     
-    Formula: (seeders / size_gb) × resolution_multiplier
+    Formula: (seeders / size_gb) × resolution_multiplier × dual_audio_multiplier
     
     Args:
         torrent: Torrent result
+        original_language: Original language of the media (e.g., 'ja', 'ko', 'en')
         
     Returns:
         Base score (0.0 if blocked/invalid)
@@ -360,6 +390,11 @@ def calculate_base_score(torrent: TorrentResult) -> float:
     else:
         # Unknown resolution - heavily penalize with 0.1x multiplier
         base_score *= 0.1
+    
+    # Apply dual audio bonus for non-English content
+    if original_language and original_language != 'en':
+        if has_dual_audio(torrent.title):
+            base_score *= 2.0
     
     return base_score
 
@@ -410,7 +445,8 @@ def rank_torrents(
     tmdb_id: Optional[int] = None,
     season_number: Optional[int] = None,
     requested_episodes: Optional[List[int]] = None,
-    qb_client: Optional[QBittorrentClient] = None
+    qb_client: Optional[QBittorrentClient] = None,
+    original_language: Optional[str] = None
 ) -> List[ScoredTorrent]:
     """
     Rank torrents by score with bonuses/penalties applied.
@@ -422,6 +458,7 @@ def rank_torrents(
         season_number: Season number for TV shows
         requested_episodes: Specific episodes requested (None = full season)
         qb_client: qBittorrent client for metadata fetching
+        original_language: Original language of the media (for dual audio bonus)
         
     Returns:
         List of scored torrents sorted by final_score descending
@@ -434,8 +471,8 @@ def rank_torrents(
             debug(f"[SCORING] Skipping failed torrent: {torrent.title}")
             continue
         
-        # Calculate base score
-        base_score = calculate_base_score(torrent)
+        # Calculate base score with dual audio bonus
+        base_score = calculate_base_score(torrent, original_language)
         if base_score == 0.0:
             debug(f"[SCORING] Torrent filtered out (low score): {torrent.title}")
             continue

@@ -993,6 +993,11 @@ async def get_disk_usage(
             'movies': os.getenv('MOVIES_PATH')
         }
         
+        # Add anime path if configured
+        anime_path = os.getenv('ANIME_PATH')
+        if anime_path and anime_path != 'no-anime-setup':
+            paths['anime'] = anime_path
+        
         # Track unique partitions to avoid duplication
         partitions_seen = {}
         disk_info = []

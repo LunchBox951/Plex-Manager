@@ -587,6 +587,51 @@ def setup_paths(existing_config: Dict[str, str]) -> Optional[Dict[str, str]]:
         
         config['TV_PATH'] = tv_path
     
+    # ANIME_PATH (optional)
+    print_info(f"\n{Colors.BOLD}Anime Library Path (Optional){Colors.ENDC}", timestamp=False)
+    print_info("Separate path for anime shows (leave empty to skip anime separation)", timestamp=False)
+    print_info("Enter 'no-anime-setup' if you don't want to be asked again", timestamp=False)
+    
+    default_anime = existing_config.get('ANIME_PATH', '')
+    
+    # Check if user previously declined anime setup
+    if default_anime == 'no-anime-setup':
+        if not prompt_yes_no("Anime setup was previously skipped. Configure now?", default=False):
+            config['ANIME_PATH'] = 'no-anime-setup'
+        else:
+            default_anime = ''
+    
+    if 'ANIME_PATH' not in config:
+        if default_anime and default_anime != 'no-anime-setup':
+            if prompt_yes_no(f"Keep existing anime path ({default_anime})?", default=True):
+                success, message = validate_path(default_anime, "Anime path")
+                if success:
+                    print_success(message)
+                    config['ANIME_PATH'] = default_anime
+                else:
+                    print_warning(f"Existing path validation failed: {message}")
+                    default_anime = ''
+        
+        if 'ANIME_PATH' not in config:
+            anime_path = input(f"{Colors.OKBLUE}Enter anime library path (or 'no-anime-setup' to skip): {Colors.ENDC}").strip()
+            
+            if not anime_path or anime_path == 'no-anime-setup':
+                config['ANIME_PATH'] = 'no-anime-setup'
+                print_info("Anime separation disabled", timestamp=False)
+            else:
+                # Validate the path
+                success, message = validate_path(anime_path, "Anime path")
+                if success:
+                    print_success(message)
+                    config['ANIME_PATH'] = anime_path
+                else:
+                    print_warning(f"Path validation failed: {message}")
+                    if prompt_yes_no("Skip anime setup?", default=True):
+                        config['ANIME_PATH'] = 'no-anime-setup'
+                    else:
+                        print_error("Anime path validation failed.")
+                        return None
+    
     return config
 
 

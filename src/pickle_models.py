@@ -132,6 +132,9 @@ class MediaRequest:
     requested_seasons: Optional[str] = None
     track_upcoming: int = 0
     
+    # Anime detection (TV shows only)
+    is_anime: Optional[bool] = None
+    
     # Retention policy
     retention_type: str = "watch_once"
     auto_delete_enabled: int = 1

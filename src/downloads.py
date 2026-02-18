@@ -615,14 +615,17 @@ async def request_media(
         print_info("Scoring torrents...", prefix="DOWNLOADS")
         qb = get_qbittorrent_client()
         
+        # Get original language for dual audio scoring
+        original_language = tmdb_data.get('original_language')
+        
         scored_torrents = rank_torrents(
             torrents=torrents,
             failed_hashes=failed_hashes,
             tmdb_id=request.tmdb_id if request.media_type == 'tv' else None,
             season_number=request.season,
             requested_episodes=request.episodes,
-            db_session=db,
-            qb_client=qb
+            qb_client=qb,
+            original_language=original_language
         )
         
         if not scored_torrents:
@@ -872,6 +875,14 @@ async def request_media_unified(
         
         print_info(f"Found: {title} ({year})", prefix="DOWNLOADS")
         
+        # Detect anime for TV shows
+        is_anime = False
+        if request.media_type == 'tv':
+            from src.TMDB import is_anime as detect_anime
+            is_anime = detect_anime(tmdb_data)
+            if is_anime:
+                print_info("Detected as anime - will use ANIME_PATH if configured", prefix="DOWNLOADS")
+        
         # ====================================================================
         # Step 3: Check Plex for Duplicates
         # ====================================================================
@@ -995,7 +1006,8 @@ async def request_media_unified(
             status='pending',  # Start as pending until downloads are added
             requested_at=datetime.utcnow(),
             requested_seasons=json.dumps(request.seasons) if request.seasons else None,
-            track_upcoming=1 if track_upcoming else 0
+            track_upcoming=1 if track_upcoming else 0,
+            is_anime=is_anime if request.media_type == 'tv' else None
         )
         
         media_request = media_request_store.save(media_request)
@@ -1033,6 +1045,9 @@ async def request_media_unified(
         failed_downloads = [download_store.load(id) for id in failed_ids if download_store.load(id)]
         failed_hashes = {d.torrent_hash.lower() for d in failed_downloads}
         
+        # Get original language for dual audio scoring
+        original_language = tmdb_data.get('original_language')
+        
         if request.media_type == 'movie':
             success, download_id, torrent_info, error = await _download_torrent(
                 prowlarr=prowlarr,
@@ -1044,7 +1059,9 @@ async def request_media_unified(
                 media_request_id=media_request_id,
                 failed_hashes=failed_hashes,
                 season=None,
-                episodes=None
+                episodes=None,
+                original_language=original_language,
+                is_anime=False
             )
             
             if not success:
@@ -1075,7 +1092,9 @@ async def request_media_unified(
                     media_request_id=media_request_id,
                     failed_hashes=failed_hashes,
                     season=season_num,
-                    episodes=requested_eps
+                    episodes=requested_eps,
+                    original_language=original_language,
+                    is_anime=is_anime
                 )
                 
                 if not success:
@@ -1136,7 +1155,9 @@ async def request_media_unified(
 async def _download_torrent(
     prowlarr, qb, media_type: str, title: str, year: int,
     tmdb_id: int, media_request_id: int, failed_hashes: set,
-    season: Optional[int], episodes: Optional[List[int]]
+    season: Optional[int], episodes: Optional[List[int]],
+    original_language: Optional[str] = None,
+    is_anime: bool = False
 ) -> tuple:
     """
     Helper function to search, score, and download a single torrent.
@@ -1168,7 +1189,8 @@ async def _download_torrent(
             tmdb_id=tmdb_id if media_type == 'tv' else None,
             season_number=season,
             requested_episodes=episodes,
-            qb_client=qb
+            qb_client=qb,
+            original_language=original_language
         )
         
         if not scored_torrents:
@@ -1300,7 +1322,14 @@ async def _download_torrent(
                 
                 # Add to qBittorrent
                 category = media_type
-                save_path = os.getenv('DOWNLOADS_PATH')
+                
+                # Determine save path - use ANIME_PATH for anime TV shows if configured
+                anime_path = os.getenv('ANIME_PATH')
+                if is_anime and anime_path and anime_path != 'no-anime-setup':
+                    save_path = anime_path
+                    print_info(f"Using anime path: {save_path}", prefix="DOWNLOADS")
+                else:
+                    save_path = os.getenv('DOWNLOADS_PATH')
                 
                 print_info(f"[ATTEMPT {actual_attempts}/{max_download_attempts}] Adding magnet to qBittorrent...", prefix="DOWNLOADS")
                 print_debug(f"  Category: {category}, Save path: {save_path}", prefix="DOWNLOADS")
@@ -1498,13 +1527,17 @@ async def search_media(
         # Score torrents
         qb = get_qbittorrent_client()
         
+        # Get original language for dual audio scoring
+        original_language = tmdb_data.get('original_language')
+        
         scored_torrents = rank_torrents(
             torrents=torrents,
             failed_hashes=failed_hashes,
             tmdb_id=request.tmdb_id if request.media_type == 'tv' else None,
             season_number=request.season,
             requested_episodes=request.episodes,
-            qb_client=qb
+            qb_client=qb,
+            original_language=original_language
         )
         
         # Format results

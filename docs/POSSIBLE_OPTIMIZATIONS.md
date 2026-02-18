@@ -11,6 +11,7 @@
             - Japanese is the default. x 1
             - Dual audio (english and japanese) is x 2
     - This should only work on tv shows - anime movies are still going to show up in the movies directory
+*** COMPLETE ***
 
 3. Have an "Upgrade" option for media - automatically upgrade media if better media is available
  - Anime should auto upgrade to Dual audio if available online but not in the files
@@ -39,6 +40,7 @@
  - This can be a scheduled task that we run once per day.
 
 4. After login, we default to the dashboard and not the homepage
+*** COMPLETE ***
 
 5. On mobile devices, the popup for the login does not close properly, possibly improve workflow
  - Possible ```landing -> auth_popup -> home```
