@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Authentication Successful</title>
+    <link rel="stylesheet" href="/static/css/landing.css">
+</head>
+<body>
+    <div class="auth-popup">
+        <div class="auth-content">
+            <div style="font-size: 3rem; margin-bottom: 1rem;">✓</div>
+            <h2>Authentication Successful!</h2>
+            <p>You should be redirected momentarily...</p>
+        </div>
+    </div>
+    
+    <script>
+        // Get PIN ID from URL parameter
+        const urlParams = new URLSearchParams(window.location.search);
+        const pinId = urlParams.get('pin_id');
+        
+        console.log('Auth success page loaded with PIN ID:', pinId);
+        console.log('Window opener:', window.opener);
+        console.log('Window origin:', window.location.origin);
+        
+        if (pinId) {
+            // Send message to parent/opener window that auth is complete
+            const message = {
+                type: 'plex_auth_success',
+                pinId: pinId
+            };
+            
+            console.log('Attempting to send message:', message);
+            
+            let messageSent = false;
+            
+            // Try to send to opener
+            if (window.opener && !window.opener.closed) {
+                try {
+                    console.log('Sending to opener at origin:', window.location.origin);
+                    window.opener.postMessage(message, window.location.origin);
+                    console.log('✓ Sent auth success message to opener');
+                    messageSent = true;
+                } catch (e) {
+                    console.error('✗ Error posting message to opener:', e);
+                }
+            } else {
+                console.warn('No opener window available');
+            }
+            
+            // Try to send to parent (for iframe scenario)
+            if (window.parent && window.parent !== window) {
+                try {
+                    console.log('Sending to parent at origin:', window.location.origin);
+                    window.parent.postMessage(message, window.location.origin);
+                    console.log('✓ Sent auth success message to parent');
+                    messageSent = true;
+                } catch (e) {
+                    console.error('✗ Error posting message to parent:', e);
+                }
+            }
+            
+            if (messageSent) {
+                // Try to close popup after a delay
+                setTimeout(() => {
+                    console.log('Attempting to close window...');
+                    if (window.opener && !window.opener.closed) {
+                        try {
+                            window.close();
+                            console.log('Window closed');
+                        } catch (e) {
+                            console.error('Could not close window:', e);
+                            document.querySelector('.auth-content p').textContent = 
+                                'Authentication successful! You can close this window now.';
+                        }
+                    }
+                }, 2000);
+            } else {
+                console.error('Failed to send message to parent window');
+                document.querySelector('.auth-content p').textContent = 
+                    'Authentication completed! Please close this window and refresh the main page.';
+            }
+        } else {
+            console.error('No PIN ID found in URL - cannot complete authentication');
+            document.querySelector('.auth-content p').textContent = 
+                'Authentication completed, but unable to communicate with main window. Please close this window and try logging in again.';
+        }
+    </script>
+</body>
+</html>

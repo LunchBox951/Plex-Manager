@@ -32,6 +32,75 @@
     </div>
     
     <script>
+        // Store current PIN ID globally so popup can access it
+        let currentPinId = null;
+        
+        // Listen for messages from the auth success popup
+        window.addEventListener('message', async (event) => {
+            console.log('Received message from:', event.origin, 'Data:', event.data);
+            
+            // Verify message origin for security (must be same origin)
+            if (event.origin !== window.location.origin) {
+                console.warn('Ignoring message from unexpected origin:', event.origin, 'Expected:', window.location.origin);
+                return;
+            }
+            
+            // Check if this is our auth success message
+            if (event.data && event.data.type === 'plex_auth_success') {
+                console.log('Received auth success message:', event.data);
+                const pinId = event.data.pinId;
+                
+                try {
+                    // Poll the PIN endpoint once to get the token
+                    console.log('Polling for token with PIN ID:', pinId);
+                    const response = await fetch(`/api/auth/poll/${pinId}`, { 
+                        credentials: 'include' 
+                    });
+                    
+                    if (!response.ok) {
+                        alert('Failed to complete authentication. Please try again.');
+                        return;
+                    }
+                    
+                    const data = await response.json();
+                    console.log('Poll response:', data);
+                    
+                    if (data.status === 'success') {
+                        console.log('Authentication successful! Token received.');
+                        
+                        // Set cookie via callback
+                        console.log('Setting session cookie...');
+                        const callbackResponse = await fetch(`/auth/callback?token=${data.token}`, {
+                            credentials: 'include'
+                        });
+                        
+                        console.log('Callback response status:', callbackResponse.status);
+                        
+                        if (!callbackResponse.ok) {
+                            const errorText = await callbackResponse.text();
+                            console.error('Failed to set session cookie:', errorText);
+                            alert('Failed to set session cookie');
+                            return;
+                        }
+                        
+                        const callbackData = await callbackResponse.json();
+                        console.log('Callback data:', callbackData);
+                        
+                        // Redirect to home page
+                        console.log('Authentication complete, redirecting to home...');
+                        window.location.href = '/home';
+                    } else if (data.status === 'error') {
+                        alert('Authentication failed: ' + (data.message || 'Unknown error'));
+                    } else {
+                        alert('Authentication is still pending. Please complete the login on Plex.');
+                    }
+                } catch (error) {
+                    console.error('Error completing authentication:', error);
+                    alert('Failed to complete authentication. Please try again.');
+                }
+            }
+        });
+        
         async function openPlexLogin() {
             try {
                 // First, get the PIN from the backend
@@ -43,10 +112,10 @@
                 }
                 
                 const pinData = await pinResponse.json();
-                const pinId = pinData.pin_id;
+                currentPinId = pinData.pin_id;
                 const authUrl = pinData.auth_url;
                 
-                console.log('Got PIN ID:', pinId);
+                console.log('Got PIN ID:', currentPinId);
                 
                 // Open popup to Plex auth URL
                 const width = 600;
@@ -65,77 +134,7 @@
                     return;
                 }
                 
-                console.log('Starting to poll for PIN authorization:', pinId);
-                
-                // Poll the PIN status endpoint to check if user has authorized
-                const checkAuth = setInterval(async () => {
-                    try {
-                        console.log('Polling PIN status:', pinId);
-                        const response = await fetch(`/api/auth/poll/${pinId}`, { 
-                            credentials: 'include' 
-                        });
-                        
-                        if (!response.ok) {
-                            console.log('Poll response not OK, continuing to poll');
-                            return; // Keep polling
-                        }
-                        
-                        const data = await response.json();
-                        console.log('Poll response:', data);
-                        
-                        if (data.status === 'success') {
-                            // Successfully authenticated!
-                            console.log('Authentication successful!');
-                            clearInterval(checkAuth);
-                            clearInterval(checkClosed);
-                            
-                            // Set cookie via callback
-                            const callbackResponse = await fetch(`/auth/callback?token=${data.token}`, {
-                                credentials: 'include'
-                            });
-                            
-                            if (!callbackResponse.ok) {
-                                alert('Failed to set session cookie');
-                                return;
-                            }
-                            
-                            // Close popup if still open
-                            if (popup && !popup.closed) {
-                                popup.close();
-                            }
-                            
-                            // Small delay to ensure cookie is set, then redirect to dashboard
-                            setTimeout(() => {
-                                window.location.href = '/dashboard';
-                            }, 200);
-                        } else if (data.status === 'error') {
-                            clearInterval(checkAuth);
-                            clearInterval(checkClosed);
-                            alert('Authentication failed: ' + (data.message || 'Unknown error'));
-                            if (popup && !popup.closed) {
-                                popup.close();
-                            }
-                        }
-                        // If status is 'pending', keep polling
-                    } catch (error) {
-                        console.error('Poll error:', error);
-                        // Keep polling even on error
-                    }
-                }, 1000);
-                
-                // Also check when popup closes
-                const checkClosed = setInterval(() => {
-                    if (popup.closed) {
-                        clearInterval(checkClosed);
-                        clearInterval(checkAuth);
-                    }
-                }, 500);
-                
-                // Stop checking after 5 minutes
-                setTimeout(() => {
-                    clearInterval(checkAuth);
-                    clearInterval(checkClosed);
-                }, 5 * 60 * 1000);
+                console.log('Popup opened, waiting for auth success message...');
                 
             } catch (error) {
                 console.error('Error starting auth:', error);

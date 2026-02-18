@@ -114,7 +114,7 @@ async def require_admin(
 
 
 @router.get("/api/auth/start")
-async def start_auth():
+async def start_auth(request: Request):
     """
     Generate a Plex PIN and return the PIN ID and auth URL.
     Used by the frontend to initiate authentication.
@@ -135,12 +135,19 @@ async def start_auth():
         
         print_success(f"Generated PIN: {pin_data['code']}, ID: {pin_data['id']}")
         
+        # Build forward URL using the actual request host (works for mobile/remote access)
+        scheme = request.url.scheme
+        host = request.headers.get("host", "localhost:8000")
+        forward_url = f"{scheme}://{host}/auth/success?pin_id={pin_data['id']}"
+        
+        print_debug(f"Forward URL: {forward_url}")
+        
         # Build Plex OAuth URL with properly formatted context
         auth_url = (
             f"https://app.plex.tv/auth#"
             f"?clientID={PLEX_CLIENT_ID}"
             f"&code={pin_data['code']}"
-            f"&forwardUrl=http://localhost:8000"
+            f"&forwardUrl={forward_url}"
         )
         
         print_debug(f"Auth URL: {auth_url}")
@@ -331,6 +338,21 @@ async def get_me(
     set_auth_cookie(response, new_token)
     
     return current_user.to_dict()
+
+
+@router.get("/auth/success")
+async def auth_success(request: Request):
+    """
+    Success page shown after Plex OAuth completes.
+    This page communicates with the parent window via postMessage.
+    """
+    print_info("Rendering auth success page...", prefix="AUTH")
+    
+    from src.main_api import templates
+    return templates.TemplateResponse(
+        "auth_valid.html",
+        {"request": request}
+    )
 
 
 @router.post("/api/auth/logout")

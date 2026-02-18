@@ -42,6 +42,8 @@
 
 5. On mobile devices, the popup for the login does not close properly, possibly improve workflow
  - Possible ```landing -> auth_popup -> home```
+ - Furthermore, constantly checking if we have a valid login every few seconds is problematic. We could have a new template ```auth_valid.html``` which submits an API call saying login was successful and then triggering the redirect
+ *** COMPLETE ***
 
 6. Add "Settings" option to the sidebar
  - Controlls various settings that can be adjusted to the user's wishes
