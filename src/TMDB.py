@@ -1222,7 +1222,7 @@ async def get_or_fetch_search(query: str, user_id: int, page: int = 1, media_typ
             user_id=user_id,
             query=normalized_query,
             cache_key=cache_key,
-            created_at=datetime.utcnow()
+            searched_at=datetime.utcnow()
         )
         search_cache_store.save(search_cache)
         
@@ -1313,7 +1313,7 @@ async def get_or_fetch_search(query: str, user_id: int, page: int = 1, media_typ
         user_id=user_id,
         query=normalized_query,
         cache_key=cache_key,
-        created_at=datetime.utcnow()
+        searched_at=datetime.utcnow()
     )
     search_cache_store.save(search_cache)
     
