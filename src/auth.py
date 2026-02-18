@@ -51,18 +51,13 @@ def create_jwt_token(user: User) -> str:
 
 
 def set_auth_cookie(response: Response, token: str):
-    """Set httpOnly authentication cookie."""
-    is_production = os.getenv("ENV", "development") == "production"
-    
-    # TODO: Replace HTTPS logic since it doesn't work currently.
-    is_production = "development"
-
+    """Set httpOnly authentication cookie for local HTTP usage."""
     response.set_cookie(
         key="session_token",
         value=token,
         httponly=True,
-        secure=is_production,  # HTTPS only in production
-        samesite="strict",
+        secure=False,  # Allow HTTP connections (local usage only)
+        samesite="lax",  # "lax" is more permissive for HTTP
         max_age=ACCESS_TOKEN_EXPIRE_DAYS * 24 * 60 * 60  # 7 days in seconds
     )
 
