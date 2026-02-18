@@ -1029,7 +1029,7 @@ async def nightly_episode_check():
     This consolidates retry logic and new episode detection in one job.
     """
     from src.TMDB import season_service, safe_tmdb_call
-    from src.prowlarr import get_prowlarr_client, CATEGORY_TV
+    from src.prowlarr import get_prowlarr_client, CATEGORY_TV, CATEGORY_MOVIES
     from src.scoring import rank_torrents, select_best_torrent
     from src.qbittorrent import get_qbittorrent_client, QBittorrentClient
     from src.torrent_validator import validate_torrent_files
@@ -1070,7 +1070,7 @@ async def nightly_episode_check():
                 # Build search query
                 if download.media_type == 'movie':
                     query = f"{media_request.title} {media_request.year}"
-                    category = CATEGORY_TV  # Should be CATEGORY_MOVIES but using TV for now
+                    category = CATEGORY_MOVIES
                 else:
                     if download.season and download.episodes:
                         # Individual episode(s)
@@ -1109,9 +1109,9 @@ async def nightly_episode_check():
                 scored_torrents = rank_torrents(
                     torrents=torrents,
                     failed_hashes=failed_hashes,
-                    tmdb_id=download.tmdb_id if download.media_type == 'tv' else None,
-                    season_number=download.season,
-                    requested_episodes=json.loads(download.episodes) if download.episodes else None,
+                    tmdb_id=download.tmdb_id,
+                    season_number=download.season if download.media_type == 'tv' else None,
+                    requested_episodes=json.loads(download.episodes) if download.media_type == 'tv' and download.episodes else None,
                     qb_client=qb
                 )
                 
