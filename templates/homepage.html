@@ -663,7 +663,8 @@
             
             switch (status.state) {
                 case 'unrequested':
-                    html = `<button class="quick-request-btn" onclick="event.stopPropagation(); openQuickRequest(${card.dataset.tmdbId}, '${card.dataset.mediaType}', '${status.title.replace(/'/g, "\\'")}')" >Request</button>`;
+                    const escapedTitle = status.title.replace(/'/g, "\\'").replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+                    html = `<button class="quick-request-btn" onclick="event.stopPropagation(); openQuickRequest(${card.dataset.tmdbId}, '${card.dataset.mediaType}', '${escapedTitle}')" >Request</button>`;
                     removeCardProgressBar(card);
                     break;
                 case 'pending':
@@ -679,7 +680,8 @@
                     renderCardProgressBar(card, 100, 'Finalizing');
                     break;
                 case 'available':
-                    html = `<button class="quick-request-btn" onclick="event.stopPropagation(); openManageRequestModal(${card.dataset.tmdbId}, '${card.dataset.mediaType}', '${status.title.replace(/'/g, "\\'")}')" style="background: var(--success-color);">✓ Manage Retention</button>`;
+                    const escapedTitleManage = status.title.replace(/'/g, "\\'").replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+                    html = `<button class="quick-request-btn" onclick="event.stopPropagation(); openManageRequestModal(${card.dataset.tmdbId}, '${card.dataset.mediaType}', '${escapedTitleManage}')" style="background: var(--success-color);">✓ Manage Retention</button>`;
                     removeCardProgressBar(card);
                     break;
                 case 'failed':
@@ -879,9 +881,14 @@
         
         // Setup retention modal
         function setupRetentionModal() {
+            console.log('Setting up retention modal listeners');
             document.querySelectorAll('input[name="retention"]').forEach(input => {
                 input.addEventListener('change', function() {
-                    document.getElementById('submitRequestBtn').classList.remove('disabled');
+                    console.log('Retention option changed:', this.value);
+                    const btn = document.getElementById('submitRequestBtn');
+                    console.log('Button before:', btn.classList.contains('disabled'));
+                    btn.classList.remove('disabled');
+                    console.log('Button after:', btn.classList.contains('disabled'));
                 });
             });
             
@@ -1033,17 +1040,33 @@
         
         // Submit request
         async function submitRequest() {
+            console.log('submitRequest called');
             const selectedRetention = document.querySelector('input[name="retention"]:checked');
-            if (!selectedRetention || !currentMediaRequest) return;
+            console.log('selectedRetention:', selectedRetention);
+            console.log('currentMediaRequest:', currentMediaRequest);
+            if (!selectedRetention || !currentMediaRequest) {
+                console.log('Early return - missing selection or request');
+                return;
+            }
             
             const retentionType = selectedRetention.value;
+            console.log('retentionType:', retentionType);
+            
+            // Save request data BEFORE closing modal (which nulls currentMediaRequest)
+            const requestInfo = {
+                tmdbId: currentMediaRequest.tmdbId,
+                mediaType: currentMediaRequest.mediaType,
+                title: currentMediaRequest.title
+            };
             
             closeRetentionModal();
             
+            console.log('Preparing to submit request...');
+            
             // Update card status IMMEDIATELY before fetch
-            const card = document.querySelector(`[data-tmdb-id="${currentMediaRequest.tmdbId}"][data-media-type="${currentMediaRequest.mediaType}"]`);
+            const card = document.querySelector(`[data-tmdb-id="${requestInfo.tmdbId}"][data-media-type="${requestInfo.mediaType}"]`);
             if (card) {
-                const overlayButtonId = `overlay-btn-${currentMediaRequest.tmdbId}-${currentMediaRequest.mediaType}`;
+                const overlayButtonId = `overlay-btn-${requestInfo.tmdbId}-${requestInfo.mediaType}`;
                 const button = document.getElementById(overlayButtonId);
                 if (button) {
                     button.innerHTML = '<div class="status-indicator">Processing...</div>';
@@ -1051,39 +1074,42 @@
             }
             
             const requestData = {
-                tmdb_id: currentMediaRequest.tmdbId,
-                media_type: currentMediaRequest.mediaType,
+                tmdb_id: requestInfo.tmdbId,
+                media_type: requestInfo.mediaType,
                 retention_type: retentionType
             };
             
             // For TV shows, request all seasons
-            if (currentMediaRequest.mediaType === 'tv') {
+            if (requestInfo.mediaType === 'tv') {
                 requestData.seasons = null; // null = all seasons
             }
             
             try {
+                console.log('Sending request to /api/media/request-unified with data:', requestData);
                 const response = await fetch('/api/media/request-unified', {
                     method: 'POST',
                     headers: {'Content-Type': 'application/json'},
                     body: JSON.stringify(requestData)
                 });
                 
+                console.log('Response received:', response.status);
                 const result = await response.json();
+                console.log('Result:', result);
                 
                 if (response.ok) {
                     // Invalidate cache immediately
-                    const cacheKey = `${currentMediaRequest.tmdbId}-${currentMediaRequest.mediaType}`;
+                    const cacheKey = `${requestInfo.tmdbId}-${requestInfo.mediaType}`;
                     statusCache.delete(cacheKey);
                     
-                    const submittedToastId = showToast('Request Submitted', `${currentMediaRequest.title} has been added to the download queue`, 'submitted');
+                    const submittedToastId = showToast('Request Submitted', `${requestInfo.title} has been added to the download queue`, 'submitted');
                     
                     // Force immediate status check, THEN start polling with delay
                     if (result.media_request_id) {
-                        await forceCardStatusCheck(currentMediaRequest.tmdbId, currentMediaRequest.mediaType);
+                        await forceCardStatusCheck(requestInfo.tmdbId, requestInfo.mediaType);
                         // Store submitted toast ID to remove it later
                         setTimeout(() => {
                             removeToast(submittedToastId);
-                            startPolling(result.media_request_id, currentMediaRequest.title);
+                            startPolling(result.media_request_id, requestInfo.title);
                         }, 5000);
                     }
                 } else {
