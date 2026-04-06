@@ -185,7 +185,7 @@ async def landing_page(request: Request):
     except:
         pass
     
-    return templates.TemplateResponse("landing.html", {"request": request})
+    return templates.TemplateResponse(request, "landing.html")
 
 
 # Health check endpoint
@@ -212,8 +212,9 @@ async def home_page(request: Request, db: Session = Depends(get_db)):
         
         # Render homepage template
         return templates.TemplateResponse(
+            request,
             "homepage.html",
-            {"request": request, "user": user, "current_page": "home"}
+            {"user": user, "current_page": "home"}
         )
     except Exception as e:
         print_error(f"Homepage access failed: {e}", prefix="AUTH")
@@ -488,9 +489,9 @@ async def media_details_page(
         
         # Render template
         return templates.TemplateResponse(
+            request,
             "media_details.html",
             {
-                "request": request,
                 "user": user,
                 "media": media_data,
                 "media_type": media_type,
@@ -735,8 +736,7 @@ async def system_dashboard(
     """
     System dashboard showing disk usage, transfer stats, and service health.
     """
-    return templates.TemplateResponse("dashboard.html", {
-        "request": request,
+    return templates.TemplateResponse(request, "dashboard.html", {
         "user": user,
         "current_page": "dashboard"
     })
@@ -750,8 +750,7 @@ async def downloads_view(
     """
     Active downloads page showing all torrents with filtering and sorting.
     """
-    return templates.TemplateResponse("active_downloads.html", {
-        "request": request,
+    return templates.TemplateResponse(request, "active_downloads.html", {
         "user": user,
         "current_page": "downloads"
     })
@@ -765,8 +764,7 @@ async def calendar_view(
     """
     Calendar page showing upcoming TV episode releases for tracked shows.
     """
-    return templates.TemplateResponse("calendar.html", {
-        "request": request,
+    return templates.TemplateResponse(request, "calendar.html", {
         "user": user,
         "current_page": "calendar"
     })

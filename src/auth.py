@@ -194,9 +194,9 @@ async def login(request: Request):
         # Return auth popup template with PIN ID and auth URL
         from src.main_api import templates
         return templates.TemplateResponse(
+            request,
             "auth_popup.html",
             {
-                "request": request,
                 "auth_url": auth_url,
                 "pin_id": pin_data['id']
             }
@@ -344,10 +344,7 @@ async def auth_success(request: Request):
     print_info("Rendering auth success page...", prefix="AUTH")
     
     from src.main_api import templates
-    return templates.TemplateResponse(
-        "auth_valid.html",
-        {"request": request}
-    )
+    return templates.TemplateResponse(request, "auth_valid.html")
 
 
 @router.post("/api/auth/logout")
