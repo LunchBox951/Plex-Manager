@@ -13,6 +13,71 @@ from urllib.parse import urlparse, parse_qs
 from src.console import print_info, print_success, print_error, print_warning
 
 
+def _decode_bencode_value(data: bytes, idx: int) -> tuple:
+    """
+    Decode a single bencode value starting at idx.
+    Returns (end_index, decoded_value).
+    """
+    if idx >= len(data):
+        raise ValueError("Unexpected end of data")
+
+    ch = data[idx:idx + 1]
+
+    if ch == b'i':  # Integer: i<number>e
+        end = data.index(b'e', idx + 1)
+        return end + 1, int(data[idx + 1:end])
+
+    if ch == b'l':  # List: l<values>e
+        idx += 1
+        items = []
+        while data[idx:idx + 1] != b'e':
+            idx, val = _decode_bencode_value(data, idx)
+            items.append(val)
+        return idx + 1, items
+
+    if ch == b'd':  # Dict: d<key><value>...e
+        idx += 1
+        result = {}
+        while data[idx:idx + 1] != b'e':
+            idx, key = _decode_bencode_value(data, idx)
+            idx, val = _decode_bencode_value(data, idx)
+            if isinstance(key, bytes):
+                key = key.decode('utf-8', errors='replace')
+            result[key] = val
+        return idx + 1, result
+
+    if ch.isdigit():  # String: <length>:<data>
+        colon = data.index(b':', idx)
+        length = int(data[idx:colon])
+        start = colon + 1
+        return start + length, data[start:start + length]
+
+    raise ValueError(f"Invalid bencode at position {idx}: {ch!r}")
+
+
+def _extract_info_hash_from_torrent(data: bytes) -> Optional[str]:
+    """
+    Extract SHA1 info hash from raw .torrent file bytes.
+
+    The info hash is the SHA1 of the raw bencode-encoded 'info' dictionary,
+    which is the standard BitTorrent info hash used for peer identification.
+    """
+    try:
+        # Find the raw 'info' dict boundaries for hashing
+        # We need the raw bytes, not the decoded value
+        marker = b'4:infod'
+        idx = data.find(marker)
+        if idx == -1:
+            return None
+
+        info_start = idx + 6  # position of 'd' starting the info dict
+        info_end, _ = _decode_bencode_value(data, info_start)
+        raw_info = data[info_start:info_end]
+        return hashlib.sha1(raw_info).hexdigest().lower()
+    except Exception:
+        return None
+
+
 class QBittorrentClient:
     """Client for interacting with qBittorrent Web API."""
     
@@ -139,8 +204,55 @@ class QBittorrentClient:
         except Exception as e:
             print_error(f"Error extracting info hash: {e}")
             return None
-    
-    def add_magnet(self, magnet_link: str, save_path: str = None, 
+
+    @staticmethod
+    def resolve_info_hash(url: str) -> Optional[str]:
+        """
+        Resolve info hash from a magnet URI or Prowlarr download URL.
+
+        Handles three cases:
+        1. Magnet URIs - extracts hash directly from xt parameter
+        2. HTTP URLs that redirect to magnet URIs - follows redirect, then extracts
+        3. HTTP URLs that return .torrent files - parses bencode for info dict hash
+
+        Args:
+            url: Magnet URI or HTTP(S) download URL
+
+        Returns:
+            Info hash as lowercase hex string, or None if extraction fails
+        """
+        if not url:
+            return None
+
+        # Try direct magnet extraction first
+        info_hash = QBittorrentClient.extract_info_hash(url)
+        if info_hash:
+            return info_hash
+
+        # For HTTP URLs, try to resolve via redirect or torrent file parsing
+        if not url.startswith('http'):
+            return None
+
+        try:
+            response = requests.get(url, allow_redirects=True, timeout=15, stream=True)
+
+            # Check if final URL after redirects is a magnet link
+            if response.url.startswith('magnet:'):
+                return QBittorrentClient.extract_info_hash(response.url)
+
+            # Check response content for .torrent file (bencode starts with 'd')
+            content = response.content
+            if content and content[:1] == b'd':
+                info_hash = _extract_info_hash_from_torrent(content)
+                if info_hash:
+                    return info_hash
+
+        except Exception as e:
+            print_warning(f"Failed to resolve info hash from URL: {e}")
+
+        return None
+
+    def add_magnet(self, magnet_link: str, save_path: str = None,
                    category: str = None) -> bool:
         """
         Add a magnet link or .torrent URL to qBittorrent.
