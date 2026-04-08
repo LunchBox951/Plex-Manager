@@ -52,6 +52,10 @@ class Download:
     torrent_attempt: int = 1
     next_check_at: Optional[datetime] = None
     scored_torrents_json: Optional[str] = None
+
+    # Upgrade tracking
+    is_upgrade: int = 0  # 1 if this download replaces existing lower-quality media
+    upgrade_replaces_media_request_id: Optional[int] = None  # MediaRequest ID being upgraded
     
     @classmethod
     def fill_missing_fields(cls, data: Dict[str, Any]) -> Dict[str, Any]:
@@ -94,7 +98,11 @@ class Download:
             data['torrent_attempt'] = 1
         if 'added_at' not in data:
             data['added_at'] = datetime.utcnow()
-        
+        if 'is_upgrade' not in data:
+            data['is_upgrade'] = 0
+        if 'upgrade_replaces_media_request_id' not in data:
+            data['upgrade_replaces_media_request_id'] = None
+
         return data
     
     def to_dict(self):

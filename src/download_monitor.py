@@ -483,6 +483,66 @@ def on_download_complete(download: Download):
     download_store.save(download)
     print_info(f"Download processing complete: {download.status}", prefix="MONITOR")
 
+    # If this is an upgrade download that succeeded, delete the old media files
+    if download.is_upgrade and download.upgrade_replaces_media_request_id and download.status == "seeding":
+        _delete_upgraded_media(download.upgrade_replaces_media_request_id, download.media_type)
+
+
+def _delete_upgraded_media(media_request_id: int, media_type: str):
+    """
+    Delete old media files after a successful upgrade download.
+
+    Finds the media files via the old MediaRequest's Plex entry and removes them.
+
+    Args:
+        media_request_id: ID of the MediaRequest being replaced
+        media_type: 'movie' or 'tv'
+    """
+    from src.media import Movie, TVShow
+    from src.plex import get_plex_libraries, _normalize_title
+
+    old_request = media_request_store.load(media_request_id)
+    if not old_request:
+        print_warning(f"[UPGRADE] Could not find old MediaRequest {media_request_id} for cleanup")
+        return
+
+    print_info(f"[UPGRADE] Deleting old media for '{old_request.title}' (MediaRequest {media_request_id})")
+
+    try:
+        libraries = get_plex_libraries()
+        target_type = 'movie' if media_type == 'movie' else 'show'
+        normalized = _normalize_title(old_request.title)
+
+        for library in libraries:
+            if library.type != target_type:
+                continue
+            for item in library.all():
+                if _normalize_title(item.title) != normalized:
+                    continue
+                item_year = getattr(item, 'year', None)
+                if item_year and old_request.year:
+                    try:
+                        if abs(item_year - int(old_request.year)) > 1:
+                            continue
+                    except (ValueError, TypeError):
+                        pass
+
+                if media_type == 'movie':
+                    Movie(item).delete()
+                    print_success(f"[UPGRADE] Deleted old movie: {old_request.title}")
+                else:
+                    show = TVShow(item)
+                    for season in show.seasons:
+                        for episode in season.episodes:
+                            episode.delete()
+                    print_success(f"[UPGRADE] Deleted old TV files: {old_request.title}")
+                return
+
+        print_warning(f"[UPGRADE] Could not find '{old_request.title}' in Plex for cleanup")
+
+    except Exception as e:
+        print_error(f"[UPGRADE] Error deleting old media for '{old_request.title}': {e}")
+
 
 def on_seed_complete_or_timeout(download: Download, reason: str):
     """
@@ -1467,6 +1527,149 @@ async def nightly_episode_check():
         db.close()
 
 
+async def check_media_upgrades():
+    """
+    Daily task (6 AM) that scans all 'available' media and queues upgrade downloads.
+
+    Upgrade criteria:
+    - Anime: existing file lacks dual audio and a dual-audio torrent is available.
+    - Non-anime: a torrent with strictly higher resolution is available.
+
+    Flow per media item:
+    1. Get current quality from Plex.
+    2. Search Prowlarr for the same title.
+    3. Score and filter candidates; keep only those that qualify as upgrades.
+    4. If a suitable upgrade torrent is found, add it to qBittorrent and create
+       a new Download record marked as upgrade (pointing back to the original
+       MediaRequest so old files are removed on completion).
+    """
+    from src.plex import get_media_quality
+    from src.prowlarr import get_prowlarr_client, CATEGORY_MOVIES, CATEGORY_TV
+    from src.scoring import rank_torrents, is_upgrade_candidate
+    from src.qbittorrent import get_qbittorrent_client, QBittorrentClient
+
+    print_info("Starting daily media upgrade check...", prefix="UPGRADE")
+
+    try:
+        available_requests = media_request_store.list_by_index('status', 'available')
+        print_info(f"Checking {len(available_requests)} available media items for upgrades", prefix="UPGRADE")
+
+        prowlarr = get_prowlarr_client()
+        qb = get_qbittorrent_client()
+
+        # Build failed-hashes set once
+        failed_ids = download_store.get_ids_by_index_multi('status', ['failed', 'partial_failed'])
+        failed_hashes = {
+            d.torrent_hash.lower()
+            for d in (download_store.load(id) for id in failed_ids)
+            if d
+        }
+
+        upgraded_count = 0
+
+        for media_request in available_requests:
+            try:
+                quality = get_media_quality(media_request.title, media_request.year, media_request.media_type)
+                if not quality.get('found'):
+                    print_debug(f"[UPGRADE] Skipping {media_request.title} - not found in Plex")
+                    continue
+
+                existing_resolution = quality.get('resolution')
+                existing_dual_audio = quality.get('has_dual_audio', False)
+                is_anime = bool(media_request.is_anime)
+
+                # Skip non-anime items with unknown or already-max resolution
+                if not is_anime and existing_resolution == '2160p':
+                    print_debug(f"[UPGRADE] Skipping {media_request.title} - already at max resolution (2160p)")
+                    continue
+
+                # Skip anime items that already have dual audio
+                if is_anime and existing_dual_audio:
+                    print_debug(f"[UPGRADE] Skipping {media_request.title} - already has dual audio")
+                    continue
+
+                # Search for torrents
+                year_suffix = f" {media_request.year}" if media_request.year else ""
+                if media_request.media_type == 'movie':
+                    query = f"{media_request.title}{year_suffix}"
+                    category = CATEGORY_MOVIES
+                else:
+                    query = f"{media_request.title}{year_suffix}"
+                    category = CATEGORY_TV
+
+                torrents = prowlarr.search(query, category)
+                if not torrents:
+                    print_debug(f"[UPGRADE] No torrents found for {media_request.title}")
+                    continue
+
+                # Score candidates (no season bonus needed here — we just want quality)
+                scored = rank_torrents(
+                    torrents=torrents,
+                    failed_hashes=failed_hashes,
+                    original_language=None,  # language handled via is_anime flag
+                )
+
+                # Find best upgrade candidate
+                best_upgrade = None
+                for candidate in scored:
+                    if is_upgrade_candidate(existing_resolution, existing_dual_audio, candidate, is_anime):
+                        best_upgrade = candidate
+                        break
+
+                if not best_upgrade:
+                    print_debug(f"[UPGRADE] No upgrade candidate for {media_request.title}")
+                    continue
+
+                # Extract info hash
+                info_hash = QBittorrentClient.resolve_info_hash(best_upgrade.torrent.magnet_link)
+                if not info_hash:
+                    print_warning(f"[UPGRADE] Could not resolve info hash for upgrade torrent: {best_upgrade.torrent.title}")
+                    continue
+
+                # Skip if already downloading this hash
+                if download_store.find_by_index('torrent_hash', info_hash):
+                    print_debug(f"[UPGRADE] Upgrade torrent already tracked: {info_hash[:8]}")
+                    continue
+
+                # Add to qBittorrent
+                success = qb.add_magnet(best_upgrade.torrent.magnet_link)
+                if not success:
+                    print_warning(f"[UPGRADE] qBittorrent rejected magnet for {media_request.title}")
+                    continue
+
+                # Create Download record
+                upgrade_download = Download(
+                    torrent_hash=info_hash,
+                    magnet_link=best_upgrade.torrent.magnet_link,
+                    status='pending',
+                    media_type=media_request.media_type,
+                    tmdb_id=media_request.tmdb_id,
+                    year=media_request.year,
+                    media_request_id=media_request.id,
+                    is_upgrade=1,
+                    upgrade_replaces_media_request_id=media_request.id,
+                    will_timeout_at=datetime.utcnow() + timedelta(days=15),
+                )
+                download_store.save(upgrade_download)
+
+                upgraded_count += 1
+                print_info(
+                    f"[UPGRADE] Queued upgrade for '{media_request.title}': "
+                    f"{best_upgrade.torrent.title} "
+                    f"({existing_resolution or 'unknown'} -> {best_upgrade.resolution or 'unknown'})",
+                    prefix="UPGRADE",
+                )
+
+            except Exception as e:
+                print_error(f"[UPGRADE] Error processing {media_request.title}: {e}")
+                continue
+
+        print_info(f"Upgrade check complete: {upgraded_count} upgrades queued", prefix="UPGRADE")
+
+    except Exception as e:
+        print_error(f"[UPGRADE] Fatal error in check_media_upgrades: {e}")
+
+
 def start_monitor():
     """Start the download monitoring scheduler."""
     scheduler = get_scheduler()
@@ -1541,7 +1744,17 @@ def start_monitor():
         id='cleanup_cache',
         replace_existing=True
     )
-    
+
+    # Check for media quality upgrades daily at 6 AM
+    scheduler.add_job(
+        check_media_upgrades,
+        'cron',
+        hour=6,
+        minute=0,
+        id='media_upgrades',
+        replace_existing=True
+    )
+
     scheduler.start()
     print_success("Download monitor started - monitoring every 15 seconds")
 

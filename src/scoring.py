@@ -598,6 +598,48 @@ def rank_torrents(
     return scored_torrents
 
 
+def is_upgrade_candidate(
+    existing_resolution: Optional[str],
+    existing_has_dual_audio: bool,
+    candidate: ScoredTorrent,
+    is_anime: bool,
+) -> bool:
+    """
+    Decide whether a scored torrent is a meaningful upgrade over existing media.
+
+    Upgrade rules:
+    - Anime: upgrade if candidate has dual audio and existing does not.
+    - Non-anime: upgrade if candidate has a strictly higher resolution.
+      Resolution order: 480p < 720p < 1080p < 2160p.
+
+    Args:
+        existing_resolution: Current resolution in Plex (e.g. '1080p'), or None if unknown.
+        existing_has_dual_audio: Whether the existing file has dual audio.
+        candidate: Scored torrent being evaluated.
+        is_anime: True for anime content.
+
+    Returns:
+        True if the candidate is a meaningful upgrade.
+    """
+    RESOLUTION_ORDER = ['480p', '720p', '1080p', '2160p']
+
+    if is_anime:
+        # Anime upgrade: gain dual audio
+        return has_dual_audio(candidate.torrent.title) and not existing_has_dual_audio
+
+    # Non-anime upgrade: higher resolution
+    candidate_res = candidate.resolution
+    if not candidate_res or not existing_resolution:
+        return False  # Can't compare without known resolutions
+
+    try:
+        existing_rank = RESOLUTION_ORDER.index(existing_resolution)
+        candidate_rank = RESOLUTION_ORDER.index(candidate_res)
+        return candidate_rank > existing_rank
+    except ValueError:
+        return False
+
+
 def select_best_torrent(
     scored_torrents: List[ScoredTorrent],
     min_score: float = 1.0

@@ -342,3 +342,99 @@ def check_media_exists(
             "error": str(e)
         }
 
+
+def get_media_quality(tmdb_title: str, year: int, media_type: str) -> dict:
+    """
+    Get current quality info for existing media in Plex.
+
+    Returns resolution and dual-audio status by inspecting the Plex media stream.
+
+    Args:
+        tmdb_title: Canonical title from TMDB
+        year: Release year
+        media_type: 'movie' or 'tv'
+
+    Returns:
+        dict with keys:
+            - found (bool): Media found in Plex
+            - resolution (str|None): e.g. '1080p', '720p', '2160p'
+            - has_dual_audio (bool): True if filename suggests dual-audio track
+            - file_path (str|None): Path to the primary media file
+    """
+    from src.scoring import has_dual_audio, extract_resolution
+
+    normalized = _normalize_title(tmdb_title)
+
+    try:
+        libraries = get_plex_libraries()
+        target_type = 'movie' if media_type == 'movie' else 'show'
+        matching_libs = [lib for lib in libraries if lib.type == target_type]
+
+        for library in matching_libs:
+            items = safe_api_call(lambda: library.all())
+            for item in items:
+                if _normalize_title(item.title) != normalized:
+                    continue
+                item_year = getattr(item, 'year', None)
+                if item_year and year:
+                    try:
+                        if abs(item_year - int(year)) > 1:
+                            continue
+                    except (ValueError, TypeError):
+                        pass
+
+                # Grab the first media part (primary file)
+                try:
+                    if media_type == 'movie':
+                        media_obj = item.media[0] if item.media else None
+                    else:
+                        # Use the first available episode for TV quality detection
+                        first_ep = None
+                        for season in item.seasons():
+                            eps = season.episodes()
+                            if eps:
+                                first_ep = eps[0]
+                                break
+                        media_obj = first_ep.media[0] if first_ep and first_ep.media else None
+
+                    if not media_obj:
+                        return {"found": True, "resolution": None, "has_dual_audio": False, "file_path": None}
+
+                    # Resolution: prefer Plex's own videoResolution field
+                    plex_res = getattr(media_obj, 'videoResolution', None)
+                    resolution = None
+                    if plex_res:
+                        # Plex returns '1080', '720', '4k', etc.
+                        res_map = {'4k': '2160p', '2160': '2160p', '1080': '1080p', '720': '720p', '480': '480p'}
+                        resolution = res_map.get(str(plex_res).lower()) or extract_resolution(str(plex_res))
+
+                    file_path = media_obj.parts[0].file if media_obj.parts else None
+
+                    # Dual audio: check filename or audio streams
+                    dual_audio = False
+                    if file_path:
+                        dual_audio = has_dual_audio(os.path.basename(file_path))
+                    if not dual_audio:
+                        try:
+                            audio_streams = [s for s in media_obj.parts[0].streams if s.streamType == 2]
+                            dual_audio = len(audio_streams) >= 2
+                        except Exception:
+                            pass
+
+                    return {
+                        "found": True,
+                        "resolution": resolution,
+                        "has_dual_audio": dual_audio,
+                        "file_path": file_path,
+                    }
+
+                except Exception as e:
+                    print_warning(f"[PLEX] Error reading media quality for {tmdb_title}: {e}")
+                    return {"found": True, "resolution": None, "has_dual_audio": False, "file_path": None}
+
+        return {"found": False, "resolution": None, "has_dual_audio": False, "file_path": None}
+
+    except Exception as e:
+        print_error(f"[PLEX] Error getting media quality for {tmdb_title}: {e}")
+        return {"found": False, "resolution": None, "has_dual_audio": False, "file_path": None}
+
