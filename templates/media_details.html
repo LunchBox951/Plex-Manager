@@ -58,6 +58,11 @@
                         <button class="request-btn" onclick="openManageRequestModal()">
                             Manage Request
                         </button>
+                        {% if media_type == 'movie' %}
+                        <button class="report-issue-btn" onclick="openReportIssueModal(null, '{{ (media.title or media.name)|replace("'", "\\'") }}')">
+                            ⚠ Report Issue
+                        </button>
+                        {% endif %}
                         {% else %}
                         <button class="request-btn" onclick="openRequestModal()">
                             Request {{ media_type|capitalize }}
@@ -295,6 +300,66 @@
         </div>
     </div>
 
+    <!-- Report Issue Modal -->
+    <div class="modal-backdrop" id="reportIssueModal">
+        <div class="modal-content">
+            <button class="modal-close" onclick="closeReportIssueModal()">×</button>
+            <div class="modal-header">
+                <h2>Report Issue</h2>
+                <p id="reportIssueLabel">What is wrong with this content?</p>
+            </div>
+
+            <div class="retention-options">
+                <label class="retention-option">
+                    <input type="radio" name="issue-reason" value="audio_sync">
+                    <div class="retention-option-content">
+                        <div class="retention-option-title">Audio Sync Issue</div>
+                        <div class="retention-option-description">
+                            Audio is out of sync with the video.
+                        </div>
+                    </div>
+                </label>
+
+                <label class="retention-option">
+                    <input type="radio" name="issue-reason" value="corrupted">
+                    <div class="retention-option-content">
+                        <div class="retention-option-title">Corrupted / Unplayable</div>
+                        <div class="retention-option-description">
+                            File is corrupted, stutters badly, or won't play at all.
+                        </div>
+                    </div>
+                </label>
+
+                <label class="retention-option">
+                    <input type="radio" name="issue-reason" value="wrong_content">
+                    <div class="retention-option-content">
+                        <div class="retention-option-title">Wrong Content</div>
+                        <div class="retention-option-description">
+                            Downloaded the wrong movie or episode entirely.
+                        </div>
+                    </div>
+                </label>
+
+                <label class="retention-option">
+                    <input type="radio" name="issue-reason" value="other">
+                    <div class="retention-option-content">
+                        <div class="retention-option-title">Other</div>
+                        <div class="retention-option-description">
+                            Another issue not listed above.
+                        </div>
+                    </div>
+                </label>
+            </div>
+
+            <div class="modal-actions">
+                <button class="btn btn-secondary" onclick="closeReportIssueModal()">Cancel</button>
+                <button class="btn btn-primary disabled" id="submitReportBtn" onclick="submitReportIssue()">
+                    Report &amp; Re-download
+                </button>
+            </div>
+        </div>
+    </div>
+
     <!-- Toast Container -->
     <div class="toast-container" id="toastContainer"></div>
 
@@ -399,51 +464,109 @@
             }
         }
         
-        // Render episodes list with stills
+        // Render episodes list with stills (uses DOM methods to avoid XSS)
         function renderEpisodes(seasonNumber, episodes) {
-            const episodesDiv = document.getElementById(`episodes-${seasonNumber}`);
-            
-            let html = '<div class="episodes-list">';
-            episodes.forEach(episode => {
-                const stillUrl = episode.still_path 
-                    ? `/cache-images/w185${episode.still_path}` 
+            const episodesDiv = document.getElementById('episodes-' + seasonNumber);
+            const listDiv = document.createElement('div');
+            listDiv.className = 'episodes-list';
+
+            episodes.forEach(function(episode) {
+                const stillUrl = episode.still_path
+                    ? '/cache-images/w185' + episode.still_path
                     : '/static/img/placeholder-episode.jpg';
-                
                 const overview = episode.overview || 'No description available.';
                 const airDate = episode.air_date ? new Date(episode.air_date).toLocaleDateString() : 'TBA';
-                
-                html += `
-                    <div class="episode-item-detailed">
-                        <div class="episode-checkbox-container">
-                            <input type="checkbox" 
-                                   class="episode-checkbox"
-                                   data-season="${seasonNumber}"
-                                   data-episode="${episode.episode_number}"
-                                   id="ep-${seasonNumber}-${episode.episode_number}">
-                        </div>
-                        <div class="episode-still-container">
-                            <img src="${stillUrl}" 
-                                 alt="Episode ${episode.episode_number}" 
-                                 class="episode-still"
-                                 onerror="this.src='/static/img/placeholder-episode.jpg'">
-                        </div>
-                        <div class="episode-info-container">
-                            <label for="ep-${seasonNumber}-${episode.episode_number}" class="episode-title">
-                                E${episode.episode_number}: ${episode.name}
-                            </label>
-                            <div class="episode-meta">
-                                <span class="episode-air-date">${airDate}</span>
-                                ${episode.vote_average > 0 ? `<span class="episode-rating">⭐ ${episode.vote_average.toFixed(1)}</span>` : ''}
-                                ${episode.available_in_plex ? `<span class="episode-available">✓ Available</span>` : ''}
-                            </div>
-                            <p class="episode-overview">${overview}</p>
-                        </div>
-                    </div>
-                `;
+                const epId = 'ep-' + seasonNumber + '-' + episode.episode_number;
+
+                // Wrapper
+                const item = document.createElement('div');
+                item.className = 'episode-item-detailed';
+
+                // Checkbox column
+                const cbContainer = document.createElement('div');
+                cbContainer.className = 'episode-checkbox-container';
+                const cb = document.createElement('input');
+                cb.type = 'checkbox';
+                cb.className = 'episode-checkbox';
+                cb.dataset.season = seasonNumber;
+                cb.dataset.episode = episode.episode_number;
+                cb.id = epId;
+                cbContainer.appendChild(cb);
+                item.appendChild(cbContainer);
+
+                // Still image
+                const stillContainer = document.createElement('div');
+                stillContainer.className = 'episode-still-container';
+                const img = document.createElement('img');
+                img.src = stillUrl;
+                img.alt = 'Episode ' + episode.episode_number;
+                img.className = 'episode-still';
+                img.onerror = function() { this.src = '/static/img/placeholder-episode.jpg'; };
+                stillContainer.appendChild(img);
+                item.appendChild(stillContainer);
+
+                // Info column
+                const infoContainer = document.createElement('div');
+                infoContainer.className = 'episode-info-container';
+
+                const label = document.createElement('label');
+                label.htmlFor = epId;
+                label.className = 'episode-title';
+                label.textContent = 'E' + episode.episode_number + ': ' + (episode.name || '');
+                infoContainer.appendChild(label);
+
+                const meta = document.createElement('div');
+                meta.className = 'episode-meta';
+
+                const airSpan = document.createElement('span');
+                airSpan.className = 'episode-air-date';
+                airSpan.textContent = airDate;
+                meta.appendChild(airSpan);
+
+                if (episode.vote_average > 0) {
+                    const ratingSpan = document.createElement('span');
+                    ratingSpan.className = 'episode-rating';
+                    ratingSpan.textContent = '⭐ ' + episode.vote_average.toFixed(1);
+                    meta.appendChild(ratingSpan);
+                }
+
+                if (episode.available_in_plex) {
+                    const availSpan = document.createElement('span');
+                    availSpan.className = 'episode-available';
+                    availSpan.textContent = '✓ Available';
+                    meta.appendChild(availSpan);
+                }
+
+                infoContainer.appendChild(meta);
+
+                const overviewP = document.createElement('p');
+                overviewP.className = 'episode-overview';
+                overviewP.textContent = overview;
+                infoContainer.appendChild(overviewP);
+
+                // Report Issue button (only for available episodes)
+                if (episode.available_in_plex) {
+                    const actionsDiv = document.createElement('div');
+                    actionsDiv.className = 'episode-actions';
+                    const reportBtn = document.createElement('button');
+                    reportBtn.className = 'episode-report-btn';
+                    reportBtn.dataset.tmdbId = mediaData.tmdb_id;
+                    reportBtn.dataset.season = seasonNumber;
+                    reportBtn.dataset.episode = episode.episode_number;
+                    reportBtn.dataset.downloadId = episode.download_id || '';
+                    reportBtn.dataset.label = 'S' + seasonNumber + 'E' + episode.episode_number + ': ' + (episode.name || '');
+                    reportBtn.textContent = '⚠ Report Issue';
+                    reportBtn.addEventListener('click', function() { openReportIssueModal(this); });
+                    actionsDiv.appendChild(reportBtn);
+                    infoContainer.appendChild(actionsDiv);
+                }
+
+                item.appendChild(infoContainer);
+                listDiv.appendChild(item);
             });
-            html += '</div>';
-            
-            episodesDiv.innerHTML = html;
+
+            episodesDiv.textContent = '';
+            episodesDiv.appendChild(listDiv);
         }
 
         // Setup retention modal
@@ -858,6 +981,107 @@
                 }
             }
         }
+
+        // ── Report Issue ──────────────────────────────────────────────────────────
+
+        let _reportDownloadId = null;
+
+        // Open modal from a movie-level button (download_id may be null — resolved lazily)
+        // or from an episode button element (reads data attributes)
+        function openReportIssueModal(btnOrDownloadId, movieLabel) {
+            var downloadId, label;
+
+            if (btnOrDownloadId && typeof btnOrDownloadId === 'object') {
+                // Called from episode button element
+                downloadId = btnOrDownloadId.dataset.downloadId || null;
+                label = btnOrDownloadId.dataset.label || 'this episode';
+            } else {
+                // Called from movie button with raw download_id string (may be null)
+                downloadId = btnOrDownloadId || null;
+                label = movieLabel || mediaData.title || 'this content';
+            }
+
+            _reportDownloadId = downloadId;
+
+            var labelEl = document.getElementById('reportIssueLabel');
+            labelEl.textContent = 'What is wrong with: ' + label + '?';
+
+            // Reset form
+            document.querySelectorAll('input[name="issue-reason"]').forEach(function(r) { r.checked = false; });
+            document.getElementById('submitReportBtn').classList.add('disabled');
+
+            document.getElementById('reportIssueModal').classList.add('active');
+        }
+
+        function closeReportIssueModal() {
+            document.getElementById('reportIssueModal').classList.remove('active');
+            _reportDownloadId = null;
+        }
+
+        document.addEventListener('DOMContentLoaded', function() {
+            document.querySelectorAll('input[name="issue-reason"]').forEach(function(r) {
+                r.addEventListener('change', function() {
+                    document.getElementById('submitReportBtn').classList.remove('disabled');
+                });
+            });
+            document.getElementById('reportIssueModal').addEventListener('click', function(e) {
+                if (e.target === this) closeReportIssueModal();
+            });
+        });
+
+        async function submitReportIssue() {
+            var reasonEl = document.querySelector('input[name="issue-reason"]:checked');
+            if (!reasonEl) return;
+
+            var reason = reasonEl.value;
+            var submitBtn = document.getElementById('submitReportBtn');
+            submitBtn.classList.add('disabled');
+            submitBtn.textContent = 'Reporting...';
+
+            try {
+                // Resolve download_id if not already known
+                var downloadId = _reportDownloadId;
+                if (!downloadId) {
+                    // Attempt lookup via the requests API
+                    var lookupResp = await fetch('/api/requests/by-media?tmdb_id=' + mediaData.tmdb_id);
+                    if (lookupResp.ok) {
+                        var reqData = await lookupResp.json();
+                        downloadId = reqData.primary_download_id || null;
+                    }
+                }
+
+                if (!downloadId) {
+                    showToast('Error', 'Could not identify the download record. The backend feature may not be available yet.', 'failed');
+                    closeReportIssueModal();
+                    return;
+                }
+
+                var resp = await fetch('/api/media/' + encodeURIComponent(downloadId) + '/report-issue', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({reason: reason})
+                });
+
+                if (resp.ok) {
+                    var data = await resp.json();
+                    showToast('Issue Reported', 'Re-downloading with this torrent excluded.', 'submitted');
+                    closeReportIssueModal();
+                } else if (resp.status === 404) {
+                    showToast('Not Found', 'Download record not found. It may have already been removed.', 'failed');
+                    closeReportIssueModal();
+                } else {
+                    var err = await resp.json().catch(function() { return {}; });
+                    showToast('Error', err.detail || 'Failed to report issue.', 'failed');
+                    closeReportIssueModal();
+                }
+            } catch (e) {
+                console.error('Report issue failed:', e);
+                showToast('Error', 'Network error while reporting issue.', 'failed');
+                closeReportIssueModal();
+            }
+        }
+
+        // ── Toast functions ───────────────────────────────────────────────────────
 
         // Toast functions
         function showToast(title, message, status, customToastId = null) {

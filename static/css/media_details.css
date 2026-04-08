@@ -613,12 +613,57 @@
     .media-poster {
         width: 150px;
     }
-    
+
     .media-title {
         font-size: 24px;
     }
-    
+
     .cast-grid {
         grid-template-columns: repeat(2, 1fr);
     }
+}
+
+/* ── Report Issue ─────────────────────────────────────────────────────────── */
+
+.report-issue-btn {
+    background: transparent;
+    border: 1px solid rgba(229, 160, 13, 0.5);
+    color: #E5A00D;
+    padding: 10px 20px;
+    border-radius: 8px;
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    margin-top: 10px;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.report-issue-btn:hover {
+    background: rgba(229, 160, 13, 0.12);
+    border-color: #E5A00D;
+}
+
+.episode-actions {
+    margin-top: 8px;
+}
+
+.episode-report-btn {
+    background: transparent;
+    border: 1px solid rgba(229, 160, 13, 0.4);
+    color: rgba(229, 160, 13, 0.8);
+    padding: 4px 10px;
+    border-radius: 6px;
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.15s ease;
+}
+
+.episode-report-btn:hover {
+    background: rgba(229, 160, 13, 0.1);
+    color: #E5A00D;
+    border-color: #E5A00D;
 }
