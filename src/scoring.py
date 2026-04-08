@@ -354,48 +354,52 @@ def get_episode_count(
     return None
 
 
-def calculate_base_score(torrent: TorrentResult, original_language: Optional[str] = None) -> float:
+def calculate_base_score(torrent: TorrentResult, original_language: Optional[str] = None, relaxed: bool = False) -> float:
     """
     Calculate base torrent score using seeders/size ratio and resolution.
-    
+
     Formula: (seeders / size_gb) × resolution_multiplier × dual_audio_multiplier
-    
+
     Args:
         torrent: Torrent result
         original_language: Original language of the media (e.g., 'ja', 'ko', 'en')
-        
+        relaxed: If True, use relaxed thresholds (lower seeders, accept unknown resolution)
+
     Returns:
         Base score (0.0 if blocked/invalid)
     """
-    # Block low-quality releases
+    # Block low-quality releases (always enforced, even in relaxed mode)
     if is_blocked_release(torrent.title):
         return 0.0
-    
-    # Minimum requirements
-    if torrent.seeders < MIN_SEEDERS:
+
+    # Minimum requirements (relaxed: seeders >= 2, size >= 50MB)
+    min_seeders = 2 if relaxed else MIN_SEEDERS
+    min_size_mb = 50 if relaxed else MIN_SIZE_MB
+
+    if torrent.seeders < min_seeders:
         return 0.0
-    
-    if torrent.size_bytes < MIN_SIZE_MB * 1024 * 1024:
+
+    if torrent.size_bytes < min_size_mb * 1024 * 1024:
         return 0.0
-    
+
     # Calculate seeder/size ratio
     size_gb = max(torrent.size_gb, 0.1)  # Avoid division by zero
     base_score = torrent.seeders / size_gb
-    
+
     # Apply resolution multiplier
     resolution = extract_resolution(torrent.title)
     if resolution:
         multiplier = RESOLUTION_MULTIPLIERS.get(resolution, 1.0)
         base_score *= multiplier
     else:
-        # Unknown resolution - heavily penalize with 0.1x multiplier
-        base_score *= 0.1
-    
+        # Unknown resolution - penalize (less harsh in relaxed mode)
+        base_score *= 0.3 if relaxed else 0.1
+
     # Apply dual audio bonus for non-English content
     if original_language and original_language != 'en':
         if has_dual_audio(torrent.title):
             base_score *= 2.0
-    
+
     return base_score
 
 
@@ -517,9 +521,54 @@ def rank_torrents(
             reason=reason
         ))
     
+    # Fallback: if all torrents were filtered, retry with relaxed criteria
+    if not scored_torrents and torrents:
+        info(f"[SCORING] All {len(torrents)} torrents filtered, applying relaxed criteria")
+        for torrent in torrents:
+            if torrent.info_hash.lower() in failed_hashes:
+                continue
+
+            base_score = calculate_base_score(torrent, original_language, relaxed=True)
+            if base_score == 0.0:
+                continue
+
+            final_score = base_score
+            episode_count = None
+            penalty_applied = None
+            is_season_pack = detect_season_pack(torrent.title)
+            resolution = extract_resolution(torrent.title)
+
+            if season_number is not None and is_season_pack:
+                episode_count = get_episode_count(
+                    torrent, tmdb_id, season_number, qb_client, use_magnet=False
+                )
+                if episode_count:
+                    final_score = apply_season_bonus(base_score, episode_count)
+                    if requested_episodes and len(requested_episodes) < episode_count:
+                        penalty_ratio = len(requested_episodes) / episode_count
+                        final_score = apply_bandwidth_penalty(final_score, len(requested_episodes), episode_count)
+                        penalty_applied = penalty_ratio ** 2
+
+            reason = f"{resolution or 'Unknown'} - {torrent.seeders} seeders (relaxed)"
+            if is_season_pack and episode_count:
+                reason += f" - {episode_count} episodes"
+            if penalty_applied:
+                reason += f" - {penalty_applied:.1%} bandwidth penalty"
+
+            scored_torrents.append(ScoredTorrent(
+                torrent=torrent,
+                base_score=base_score,
+                final_score=final_score,
+                resolution=resolution,
+                is_season_pack=is_season_pack,
+                episode_count=episode_count,
+                penalty_applied=penalty_applied,
+                reason=reason
+            ))
+
     # Sort by final score descending
     scored_torrents.sort(key=lambda x: x.final_score, reverse=True)
-    
+
     # Refine top 3 with magnet metadata if needed
     if qb_client and season_number is not None:
         for i, scored in enumerate(scored_torrents[:3]):
