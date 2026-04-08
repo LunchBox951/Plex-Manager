@@ -1055,6 +1055,7 @@ async def download_image(path: str, size: str = 'w500', cache_type: str = 'trend
                     metadata[filename] = {
                         'cache_type': cache_type,
                         'downloaded_at': datetime.utcnow().isoformat(),
+                        'expires_at': (datetime.utcnow() + timedelta(days=7)).isoformat(),
                         'path': path,
                         'size': size
                     }

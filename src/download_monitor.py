@@ -977,7 +977,7 @@ async def cleanup_expired_cache():
     """Remove expired images from cache."""
     import os
     import json
-    from datetime import datetime, timezone
+    from datetime import datetime, timezone, timedelta
     
     print_info("Starting scheduled cache cleanup")
     
@@ -996,8 +996,16 @@ async def cleanup_expired_cache():
         current_time = datetime.now(timezone.utc)
         
         for filename, file_info in list(metadata.items()):
-            expires_at = datetime.fromisoformat(file_info['expires_at'])
-            
+            if 'expires_at' in file_info:
+                expires_at = datetime.fromisoformat(file_info['expires_at'])
+            elif 'downloaded_at' in file_info:
+                expires_at = datetime.fromisoformat(file_info['downloaded_at']) + timedelta(days=7)
+            else:
+                continue
+
+            if expires_at.tzinfo is None:
+                expires_at = expires_at.replace(tzinfo=timezone.utc)
+
             if current_time > expires_at:
                 image_path = os.path.join(cache_dir, filename)
                 if os.path.exists(image_path):
