@@ -1132,10 +1132,10 @@ async def nightly_episode_check():
                     download_store.save(download)
                     continue
                 
-                # Extract info hash
-                info_hash = QBittorrentClient.extract_info_hash(best_torrent.torrent.magnet_link)
+                # Extract info hash (supports magnet URIs and Prowlarr download URLs)
+                info_hash = QBittorrentClient.resolve_info_hash(best_torrent.torrent.magnet_link)
                 if not info_hash:
-                    print_error(f"Could not extract info hash from magnet")
+                    print_error(f"Could not extract info hash from magnet/URL")
                     download.retry_count += 1
                     download_store.save(download)
                     continue
@@ -1351,8 +1351,8 @@ async def nightly_episode_check():
                                 print_info(f"No torrents meet quality requirements")
                                 continue
                             
-                            # Extract info hash
-                            info_hash = QBittorrentClient.extract_info_hash(best_torrent.torrent.magnet_link)
+                            # Extract info hash (supports magnet URIs and Prowlarr download URLs)
+                            info_hash = QBittorrentClient.resolve_info_hash(best_torrent.torrent.magnet_link)
                             if not info_hash:
                                 print_error(f"Could not extract info hash")
                                 continue

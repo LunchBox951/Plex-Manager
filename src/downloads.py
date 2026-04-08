@@ -643,10 +643,10 @@ async def request_media(
         max_attempts = 3
         for attempt in range(max_attempts):
             try:
-                # Extract info hash
-                info_hash = QBittorrentClient.extract_info_hash(best_torrent.torrent.magnet_link)
+                # Extract info hash (supports magnet URIs and Prowlarr download URLs)
+                info_hash = QBittorrentClient.resolve_info_hash(best_torrent.torrent.magnet_link)
                 if not info_hash:
-                    raise ValueError("Could not extract info hash from magnet")
+                    raise ValueError("Could not extract info hash from magnet/URL")
                 
                 # Check for duplicates
                 existing = download_store.find_by_index('torrent_hash', info_hash)
@@ -1275,11 +1275,11 @@ async def _download_torrent(
                 continue
             
             try:
-                # Use info_hash from Prowlarr if available, otherwise extract from magnet
+                # Use info_hash from Prowlarr if available, otherwise extract from magnet/URL
                 info_hash = best_torrent.torrent.info_hash
                 if not info_hash:
-                    info_hash = QBittorrentClient.extract_info_hash(best_torrent.torrent.magnet_link)
-                
+                    info_hash = QBittorrentClient.resolve_info_hash(best_torrent.torrent.magnet_link)
+
                 if not info_hash:
                     print_warning(f"Could not get info hash for torrent, skipping (not counted toward limit)", prefix="DOWNLOADS")
                     continue

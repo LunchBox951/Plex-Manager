@@ -263,10 +263,10 @@ def get_episode_count_from_magnet(magnet_link: str, qb_client: QBittorrentClient
     from src.torrent_validator import is_video_file, parse_episode_info
     
     try:
-        # Extract info hash for tracking
-        info_hash = QBittorrentClient.extract_info_hash(magnet_link)
+        # Extract info hash for tracking (supports magnet URIs and Prowlarr download URLs)
+        info_hash = QBittorrentClient.resolve_info_hash(magnet_link)
         if not info_hash:
-            warning("[SCORING] Could not extract info hash from magnet")
+            warning("[SCORING] Could not extract info hash from magnet/URL")
             return None
         
         # Add torrent in paused state
