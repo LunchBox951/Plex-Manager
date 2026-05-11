@@ -23,7 +23,7 @@ from src.torrent_validator import (
     format_plex_subtitle_name, format_plex_episode_name
 )
 from src.utils import normalize_title
-from src.console import print_info, print_success, print_warning, print_error, print_debug, print_monitor
+from src.console import print_info, print_success, print_warning, print_error, print_debug, print_monitor, print_failure
 
 
 # Global scheduler instance
