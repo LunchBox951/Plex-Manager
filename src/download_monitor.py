@@ -838,7 +838,7 @@ def check_scheduled_deletions():
     from datetime import datetime
     
     print_info(f"[{datetime.utcnow()}] Running scheduled deletion check...")
-    db = get_database()
+    db = SessionLocal()
     
     try:
         plex = get_plex_server()
