@@ -37,7 +37,7 @@ def _is_torrent_add_success(response) -> bool:
             ids = data.get('added_torrent_ids') or []
             if isinstance(ids, list) and len(ids) > 0:
                 return True
-        except (ValueError, AttributeError):
+        except (ValueError, AttributeError, TypeError):
             pass
     return False
 
