@@ -23,7 +23,7 @@ from src.torrent_validator import (
     format_plex_subtitle_name, format_plex_episode_name
 )
 from src.utils import normalize_title
-from src.console import print_info, print_success, print_warning, print_error, print_debug, print_monitor
+from src.console import print_info, print_success, print_warning, print_error, print_debug, print_monitor, print_failure
 
 
 # Global scheduler instance
@@ -838,7 +838,7 @@ def check_scheduled_deletions():
     from datetime import datetime
     
     print_info(f"[{datetime.utcnow()}] Running scheduled deletion check...")
-    db = get_database()
+    db = SessionLocal()
     
     try:
         plex = get_plex_server()
@@ -977,7 +977,7 @@ async def cleanup_expired_cache():
     """Remove expired images from cache."""
     import os
     import json
-    from datetime import datetime, timezone
+    from datetime import datetime, timezone, timedelta
     
     print_info("Starting scheduled cache cleanup")
     
@@ -996,8 +996,16 @@ async def cleanup_expired_cache():
         current_time = datetime.now(timezone.utc)
         
         for filename, file_info in list(metadata.items()):
-            expires_at = datetime.fromisoformat(file_info['expires_at'])
-            
+            if 'expires_at' in file_info:
+                expires_at = datetime.fromisoformat(file_info['expires_at'])
+            elif 'downloaded_at' in file_info:
+                expires_at = datetime.fromisoformat(file_info['downloaded_at']) + timedelta(days=7)
+            else:
+                continue
+
+            if expires_at.tzinfo is None:
+                expires_at = expires_at.replace(tzinfo=timezone.utc)
+
             if current_time > expires_at:
                 image_path = os.path.join(cache_dir, filename)
                 if os.path.exists(image_path):
@@ -1132,10 +1140,10 @@ async def nightly_episode_check():
                     download_store.save(download)
                     continue
                 
-                # Extract info hash
-                info_hash = QBittorrentClient.extract_info_hash(best_torrent.torrent.magnet_link)
+                # Extract info hash (supports magnet URIs and Prowlarr download URLs)
+                info_hash = QBittorrentClient.resolve_info_hash(best_torrent.torrent.magnet_link)
                 if not info_hash:
-                    print_error(f"Could not extract info hash from magnet")
+                    print_error(f"Could not extract info hash from magnet/URL")
                     download.retry_count += 1
                     download_store.save(download)
                     continue
@@ -1351,8 +1359,8 @@ async def nightly_episode_check():
                                 print_info(f"No torrents meet quality requirements")
                                 continue
                             
-                            # Extract info hash
-                            info_hash = QBittorrentClient.extract_info_hash(best_torrent.torrent.magnet_link)
+                            # Extract info hash (supports magnet URIs and Prowlarr download URLs)
+                            info_hash = QBittorrentClient.resolve_info_hash(best_torrent.torrent.magnet_link)
                             if not info_hash:
                                 print_error(f"Could not extract info hash")
                                 continue

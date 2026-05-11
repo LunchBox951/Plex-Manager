@@ -12,6 +12,111 @@ from urllib.parse import urlparse, parse_qs
 
 from src.console import print_info, print_success, print_error, print_warning
 
+_CB_CLOSED = "CLOSED"
+_CB_OPEN = "OPEN"
+_CB_HALF_OPEN = "HALF_OPEN"
+_CB_THRESHOLD = 5
+_CB_COOLDOWN = 300
+
+
+class CircuitBreaker:
+    def __init__(self):
+        self.state = _CB_CLOSED
+        self.failure_count = 0
+        self.opened_at = None
+
+    def record_success(self):
+        if self.state != _CB_CLOSED:
+            print_info("qBittorrent reachable — resuming normal operation")
+        self.state = _CB_CLOSED
+        self.failure_count = 0
+        self.opened_at = None
+
+    def record_failure(self):
+        if self.state == _CB_OPEN:
+            return
+        self.failure_count += 1
+        if self.state == _CB_HALF_OPEN or self.failure_count >= _CB_THRESHOLD:
+            self.state = _CB_OPEN
+            self.opened_at = time.time()
+            print_warning("qBittorrent unreachable — entering 5-minute cooldown")
+
+    def allow_request(self) -> bool:
+        if self.state == _CB_CLOSED:
+            return True
+        if self.state == _CB_OPEN:
+            if time.time() - self.opened_at >= _CB_COOLDOWN:
+                self.state = _CB_HALF_OPEN
+                self.failure_count = 0
+                return True
+            return False
+        return True
+
+
+def _decode_bencode_value(data: bytes, idx: int) -> tuple:
+    """
+    Decode a single bencode value starting at idx.
+    Returns (end_index, decoded_value).
+    """
+    if idx >= len(data):
+        raise ValueError("Unexpected end of data")
+
+    ch = data[idx:idx + 1]
+
+    if ch == b'i':  # Integer: i<number>e
+        end = data.index(b'e', idx + 1)
+        return end + 1, int(data[idx + 1:end])
+
+    if ch == b'l':  # List: l<values>e
+        idx += 1
+        items = []
+        while data[idx:idx + 1] != b'e':
+            idx, val = _decode_bencode_value(data, idx)
+            items.append(val)
+        return idx + 1, items
+
+    if ch == b'd':  # Dict: d<key><value>...e
+        idx += 1
+        result = {}
+        while data[idx:idx + 1] != b'e':
+            idx, key = _decode_bencode_value(data, idx)
+            idx, val = _decode_bencode_value(data, idx)
+            if isinstance(key, bytes):
+                key = key.decode('utf-8', errors='replace')
+            result[key] = val
+        return idx + 1, result
+
+    if ch.isdigit():  # String: <length>:<data>
+        colon = data.index(b':', idx)
+        length = int(data[idx:colon])
+        start = colon + 1
+        return start + length, data[start:start + length]
+
+    raise ValueError(f"Invalid bencode at position {idx}: {ch!r}")
+
+
+def _extract_info_hash_from_torrent(data: bytes) -> Optional[str]:
+    """
+    Extract SHA1 info hash from raw .torrent file bytes.
+
+    The info hash is the SHA1 of the raw bencode-encoded 'info' dictionary,
+    which is the standard BitTorrent info hash used for peer identification.
+    """
+    try:
+        # Find the raw 'info' dict boundaries for hashing
+        # We need the raw bytes, not the decoded value
+        marker = b'4:infod'
+        idx = data.find(marker)
+        if idx == -1:
+            return None
+
+        info_start = idx + 6  # position of 'd' starting the info dict
+        info_end, _ = _decode_bencode_value(data, info_start)
+        raw_info = data[info_start:info_end]
+        return hashlib.sha1(raw_info).hexdigest().lower()
+    except Exception:
+        return None
+
 
 class QBittorrentClient:
     """Client for interacting with qBittorrent Web API."""
@@ -30,11 +135,12 @@ class QBittorrentClient:
         self.password = password or os.getenv('QBITTORRENT_PASSWORD', 'adminpass')
         self.session = requests.Session()
         self._authenticated = False
+        self._cb = CircuitBreaker()
     
     def _login(self) -> bool:
         """
         Authenticate with qBittorrent Web API.
-        
+
         Returns:
             True if authentication successful, False otherwise
         """
@@ -44,15 +150,20 @@ class QBittorrentClient:
                 data={"username": self.username, "password": self.password},
                 timeout=10
             )
-            
-            if response.status_code == 200 and response.text == "Ok.":
+
+            if response.status_code == 200 and response.text.strip() in ("Ok.", ""):
                 self._authenticated = True
+                self._cb.record_success()
                 print_success(f"Successfully authenticated with qBittorrent at {self.base_url}")
                 return True
             else:
+                if self._cb.state == _CB_HALF_OPEN:
+                    self._cb.record_failure()
                 print_error(f"Failed to authenticate with qBittorrent: {response.text}")
                 return False
         except Exception as e:
+            if self._cb.state == _CB_HALF_OPEN:
+                self._cb.record_failure()
             print_error(f"Error during qBittorrent authentication: {e}")
             return False
     
@@ -76,34 +187,40 @@ class QBittorrentClient:
         Returns:
             Response object or None if all retries failed
         """
+        if not self._cb.allow_request():
+            return None
+
         self._ensure_authenticated()
-        
+        if not self._cb.allow_request():
+            return None
+
         url = f"{self.base_url}{endpoint}"
-        
+
         for attempt in range(max_retries):
             try:
                 response = getattr(self.session, method)(url, timeout=30, **kwargs)
-                
-                # Check if we need to re-authenticate
+
                 if response.status_code == 403:
                     print_warning("Session expired, re-authenticating...")
                     self._authenticated = False
                     self._ensure_authenticated()
                     continue
-                
+
+                self._cb.record_success()
                 return response
-                
+
             except requests.exceptions.RequestException as e:
                 print_warning(f"API call failed (attempt {attempt + 1}/{max_retries}): {e}")
-                
+
                 if attempt < max_retries - 1:
-                    sleep_time = retry_delay * (2 ** attempt)  # Exponential backoff
+                    sleep_time = retry_delay * (2 ** attempt)
                     print_info(f"Retrying in {sleep_time} seconds...")
                     time.sleep(sleep_time)
                 else:
                     print_error("Max retries reached, giving up")
+                    self._cb.record_failure()
                     return None
-        
+
         return None
     
     @staticmethod
@@ -139,8 +256,55 @@ class QBittorrentClient:
         except Exception as e:
             print_error(f"Error extracting info hash: {e}")
             return None
-    
-    def add_magnet(self, magnet_link: str, save_path: str = None, 
+
+    @staticmethod
+    def resolve_info_hash(url: str) -> Optional[str]:
+        """
+        Resolve info hash from a magnet URI or Prowlarr download URL.
+
+        Handles three cases:
+        1. Magnet URIs - extracts hash directly from xt parameter
+        2. HTTP URLs that redirect to magnet URIs - follows redirect, then extracts
+        3. HTTP URLs that return .torrent files - parses bencode for info dict hash
+
+        Args:
+            url: Magnet URI or HTTP(S) download URL
+
+        Returns:
+            Info hash as lowercase hex string, or None if extraction fails
+        """
+        if not url:
+            return None
+
+        # Try direct magnet extraction first
+        info_hash = QBittorrentClient.extract_info_hash(url)
+        if info_hash:
+            return info_hash
+
+        # For HTTP URLs, try to resolve via redirect or torrent file parsing
+        if not url.startswith('http'):
+            return None
+
+        try:
+            response = requests.get(url, allow_redirects=True, timeout=15, stream=True)
+
+            # Check if final URL after redirects is a magnet link
+            if response.url.startswith('magnet:'):
+                return QBittorrentClient.extract_info_hash(response.url)
+
+            # Check response content for .torrent file (bencode starts with 'd')
+            content = response.content
+            if content and content[:1] == b'd':
+                info_hash = _extract_info_hash_from_torrent(content)
+                if info_hash:
+                    return info_hash
+
+        except Exception as e:
+            print_warning(f"Failed to resolve info hash from URL: {e}")
+
+        return None
+
+    def add_magnet(self, magnet_link: str, save_path: str = None,
                    category: str = None) -> bool:
         """
         Add a magnet link or .torrent URL to qBittorrent.
