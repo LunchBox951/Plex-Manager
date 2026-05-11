@@ -4,6 +4,7 @@ Handles authentication, torrent management, and metadata extraction.
 """
 
 import os
+import re
 import time
 import hashlib
 import requests
@@ -11,6 +12,10 @@ from typing import Dict, List, Optional, Any
 from urllib.parse import urlparse, parse_qs, urljoin
 
 from src.console import print_info, print_success, print_error, print_warning
+
+
+def _redact_url(url: str) -> str:
+    return re.sub(r'(apikey|api_key|token|password)=[^&]+', r'\1=REDACTED', url, flags=re.IGNORECASE)
 
 _CB_CLOSED = "CLOSED"
 _CB_OPEN = "OPEN"
@@ -259,6 +264,38 @@ class QBittorrentClient:
             return None
 
     @staticmethod
+    def _resolve_torrent_url(url: str, max_depth: int = 5) -> tuple:
+        """
+        Walk redirect chain for an HTTP(S) URL and return the final usable form.
+
+        Returns a tuple (final_url, content_bytes_or_None):
+          - magnet URI found in redirect chain  → (magnet_uri, None)
+          - 200 response with bencode body      → (original_url, content_bytes)
+          - anything else / error               → (None, None)
+        """
+        original_url = url
+        current_url = url
+        try:
+            for _ in range(max_depth):
+                response = requests.get(current_url, allow_redirects=False, timeout=15)
+                if response.is_redirect:
+                    location = response.headers.get('Location', '')
+                    if not location:
+                        break
+                    if location.startswith('magnet:'):
+                        return location, None
+                    current_url = urljoin(current_url, location)
+                    continue
+                if response.status_code == 200:
+                    content = response.content
+                    if content and content[:1] == b'd':
+                        return original_url, content
+                break
+        except Exception as e:
+            print_warning(f"Failed to resolve torrent URL: {e}")
+        return None, None
+
+    @staticmethod
     def resolve_info_hash(url: str) -> Optional[str]:
         """
         Resolve info hash from a magnet URI or Prowlarr download URL.
@@ -277,74 +314,80 @@ class QBittorrentClient:
         if not url:
             return None
 
-        # Try direct magnet extraction first
         info_hash = QBittorrentClient.extract_info_hash(url)
         if info_hash:
             return info_hash
 
-        # For HTTP URLs, try to resolve via redirect or torrent file parsing
         if not url.startswith('http'):
             return None
 
         try:
-            current_url = url
-            for _ in range(5):
-                response = requests.get(current_url, allow_redirects=False, timeout=15)
-                if response.is_redirect:
-                    location = response.headers.get('Location', '')
-                    if not location:
-                        break
-                    if location.startswith('magnet:'):
-                        return QBittorrentClient.extract_info_hash(location)
-                    current_url = urljoin(current_url, location)
-                    continue
-                if response.status_code == 200:
-                    content = response.content
-                    if content and content[:1] == b'd':
-                        info_hash = _extract_info_hash_from_torrent(content)
-                        if info_hash:
-                            return info_hash
-                break
-
+            final_url, content = QBittorrentClient._resolve_torrent_url(url)
+            if final_url and final_url.startswith('magnet:'):
+                return QBittorrentClient.extract_info_hash(final_url)
+            if content:
+                return _extract_info_hash_from_torrent(content)
         except Exception as e:
             print_warning(f"Failed to resolve info hash from URL: {e}")
 
         return None
 
     def add_magnet(self, magnet_link: str, save_path: str = None,
-                   category: str = None) -> bool:
+                   category: str = None, paused: bool = False) -> bool:
         """
         Add a magnet link or .torrent URL to qBittorrent.
-        
-        qBittorrent's API accepts both magnet:// URIs and HTTP(S) URLs to .torrent files.
-        The server will download and parse .torrent files automatically.
-        
+
+        If magnet_link is an HTTP(S) URL that redirects to a magnet URI, the
+        resolved magnet URI is sent to qBit (qBit cannot follow HTTP→magnet
+        redirects itself). Direct magnet URIs and HTTP URLs returning .torrent
+        bytes are passed through unchanged.
+
         Args:
             magnet_link: Magnet URI or HTTP(S) URL to .torrent file
             save_path: Optional custom save path
             category: Optional category (e.g., 'movies', 'tv')
-            
+            paused: If True, add torrent in paused state
+
         Returns:
             True if added successfully, False otherwise
         """
-        data = {"urls": magnet_link}
-        
+        url_to_send = magnet_link
+
+        if magnet_link.startswith('http'):
+            final_url, _ = QBittorrentClient._resolve_torrent_url(magnet_link)
+            if final_url is None:
+                print_error(f"[ADD_MAGNET] Could not resolve URL to a usable torrent: {_redact_url(magnet_link)[:120]}")
+                return False
+            if final_url.startswith('magnet:'):
+                url_to_send = final_url
+
+        data = {"urls": url_to_send}
+
         if save_path:
             data["savepath"] = save_path
         if category:
             data["category"] = category
-        
+        if paused:
+            data["paused"] = "true"
+
         response = self.safe_api_call("post", "/api/v2/torrents/add", data=data)
-        
+
         if response and response.status_code == 200:
             if response.text == "Ok.":
-                link_type = "torrent URL" if magnet_link.startswith('http') else "magnet link"
+                link_type = "torrent URL" if url_to_send.startswith('http') else "magnet link"
                 print_success(f"Successfully added {link_type} to qBittorrent")
                 return True
-            else:
-                print_error(f"Failed to add torrent: {response.text}")
-                return False
-        
+            print_error(
+                f"[ADD_MAGNET] qBittorrent rejected torrent: HTTP {response.status_code} "
+                f"body={response.text[:500]!r} url={_redact_url(url_to_send)[:120]}"
+            )
+            return False
+
+        if response is not None:
+            print_error(
+                f"[ADD_MAGNET] Unexpected response: HTTP {response.status_code} "
+                f"body={response.text[:500]!r} url={_redact_url(url_to_send)[:120]}"
+            )
         return False
     
     def get_torrent_info(self, torrent_hash: str) -> Optional[Dict[str, Any]]:

@@ -1171,7 +1171,7 @@ async def nightly_episode_check():
                 save_path = os.getenv('DOWNLOADS_PATH', 'C:\\downloads')
                 
                 success = qb.add_magnet(
-                    magnet_uri=best_torrent.torrent.magnet_link,
+                    magnet_link=best_torrent.torrent.magnet_link,
                     category=category,
                     save_path=save_path
                 )
@@ -1377,7 +1377,7 @@ async def nightly_episode_check():
                             save_path = os.getenv('DOWNLOADS_PATH', 'C:\\downloads')
                             
                             success = qb.add_magnet(
-                                magnet_uri=best_torrent.torrent.magnet_link,
+                                magnet_link=best_torrent.torrent.magnet_link,
                                 category=category,
                                 save_path=save_path
                             )
