@@ -12,6 +12,43 @@ from urllib.parse import urlparse, parse_qs
 
 from src.console import print_info, print_success, print_error, print_warning
 
+_CB_CLOSED = "CLOSED"
+_CB_OPEN = "OPEN"
+_CB_HALF_OPEN = "HALF_OPEN"
+_CB_THRESHOLD = 5
+_CB_COOLDOWN = 300
+
+
+class CircuitBreaker:
+    def __init__(self):
+        self.state = _CB_CLOSED
+        self.failure_count = 0
+        self.opened_at = None
+
+    def record_success(self):
+        if self.state != _CB_CLOSED:
+            print_info("qBittorrent reachable — resuming normal operation")
+        self.state = _CB_CLOSED
+        self.failure_count = 0
+        self.opened_at = None
+
+    def record_failure(self):
+        self.failure_count += 1
+        if self.state == _CB_HALF_OPEN or (self.state == _CB_CLOSED and self.failure_count >= _CB_THRESHOLD):
+            self.state = _CB_OPEN
+            self.opened_at = time.time()
+            print_warning("qBittorrent unreachable — entering 5-minute cooldown")
+
+    def allow_request(self) -> bool:
+        if self.state == _CB_CLOSED:
+            return True
+        if self.state == _CB_OPEN:
+            if time.time() - self.opened_at >= _CB_COOLDOWN:
+                self.state = _CB_HALF_OPEN
+                return True
+            return False
+        return True
+
 
 def _decode_bencode_value(data: bytes, idx: int) -> tuple:
     """
@@ -95,11 +132,12 @@ class QBittorrentClient:
         self.password = password or os.getenv('QBITTORRENT_PASSWORD', 'adminpass')
         self.session = requests.Session()
         self._authenticated = False
+        self._cb = CircuitBreaker()
     
     def _login(self) -> bool:
         """
         Authenticate with qBittorrent Web API.
-        
+
         Returns:
             True if authentication successful, False otherwise
         """
@@ -109,15 +147,18 @@ class QBittorrentClient:
                 data={"username": self.username, "password": self.password},
                 timeout=10
             )
-            
+
             if response.status_code == 200 and response.text.strip() in ("Ok.", ""):
                 self._authenticated = True
+                self._cb.record_success()
                 print_success(f"Successfully authenticated with qBittorrent at {self.base_url}")
                 return True
             else:
+                self._cb.record_failure()
                 print_error(f"Failed to authenticate with qBittorrent: {response.text}")
                 return False
         except Exception as e:
+            self._cb.record_failure()
             print_error(f"Error during qBittorrent authentication: {e}")
             return False
     
@@ -141,34 +182,38 @@ class QBittorrentClient:
         Returns:
             Response object or None if all retries failed
         """
+        if not self._cb.allow_request():
+            return None
+
         self._ensure_authenticated()
-        
+
         url = f"{self.base_url}{endpoint}"
-        
+
         for attempt in range(max_retries):
             try:
                 response = getattr(self.session, method)(url, timeout=30, **kwargs)
-                
-                # Check if we need to re-authenticate
+
                 if response.status_code == 403:
                     print_warning("Session expired, re-authenticating...")
                     self._authenticated = False
                     self._ensure_authenticated()
                     continue
-                
+
+                self._cb.record_success()
                 return response
-                
+
             except requests.exceptions.RequestException as e:
                 print_warning(f"API call failed (attempt {attempt + 1}/{max_retries}): {e}")
-                
+
                 if attempt < max_retries - 1:
-                    sleep_time = retry_delay * (2 ** attempt)  # Exponential backoff
+                    sleep_time = retry_delay * (2 ** attempt)
                     print_info(f"Retrying in {sleep_time} seconds...")
                     time.sleep(sleep_time)
                 else:
                     print_error("Max retries reached, giving up")
+                    self._cb.record_failure()
                     return None
-        
+
         return None
     
     @staticmethod
