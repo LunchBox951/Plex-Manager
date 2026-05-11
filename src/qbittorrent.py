@@ -8,7 +8,7 @@ import time
 import hashlib
 import requests
 from typing import Dict, List, Optional, Any
-from urllib.parse import urlparse, parse_qs
+from urllib.parse import urlparse, parse_qs, urljoin
 
 from src.console import print_info, print_success, print_error, print_warning
 
@@ -296,7 +296,7 @@ class QBittorrentClient:
                         break
                     if location.startswith('magnet:'):
                         return QBittorrentClient.extract_info_hash(location)
-                    current_url = location
+                    current_url = urljoin(current_url, location)
                     continue
                 if response.status_code == 200:
                     content = response.content
