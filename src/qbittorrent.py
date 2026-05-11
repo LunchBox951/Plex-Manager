@@ -17,6 +17,31 @@ from src.console import print_info, print_success, print_error, print_warning
 def _redact_url(url: str) -> str:
     return re.sub(r'(apikey|api_key|token|password)=[^&]+', r'\1=REDACTED', url, flags=re.IGNORECASE)
 
+def _is_torrent_add_success(response) -> bool:
+    if response is None:
+        return False
+    if response.status_code == 409:
+        return True
+    if not response.ok:
+        return False
+    text = response.text.strip()
+    if text == "Ok.":
+        return True
+    if text.startswith('{'):
+        try:
+            data = response.json()
+            if data.get('success_count', 0) > 0:
+                return True
+            if data.get('pending_count', 0) > 0:
+                return True
+            ids = data.get('added_torrent_ids') or []
+            if isinstance(ids, list) and len(ids) > 0:
+                return True
+        except (ValueError, AttributeError):
+            pass
+    return False
+
+
 _CB_CLOSED = "CLOSED"
 _CB_OPEN = "OPEN"
 _CB_HALF_OPEN = "HALF_OPEN"
@@ -372,22 +397,17 @@ class QBittorrentClient:
 
         response = self.safe_api_call("post", "/api/v2/torrents/add", data=data)
 
-        if response and response.status_code == 200:
-            if response.text == "Ok.":
-                link_type = "torrent URL" if url_to_send.startswith('http') else "magnet link"
-                print_success(f"Successfully added {link_type} to qBittorrent")
-                return True
-            print_error(
-                f"[ADD_MAGNET] qBittorrent rejected torrent: HTTP {response.status_code} "
-                f"body={response.text[:500]!r} url={_redact_url(url_to_send)[:120]}"
-            )
-            return False
+        if _is_torrent_add_success(response):
+            link_type = "torrent URL" if url_to_send.startswith('http') else "magnet link"
+            print_success(f"Successfully added {link_type} to qBittorrent")
+            return True
 
-        if response is not None:
-            print_error(
-                f"[ADD_MAGNET] Unexpected response: HTTP {response.status_code} "
-                f"body={response.text[:500]!r} url={_redact_url(url_to_send)[:120]}"
-            )
+        if response is None:
+            return False
+        print_error(
+            f"[ADD_MAGNET] qBittorrent rejected torrent: HTTP {response.status_code} "
+            f"body={response.text[:500]!r} url={_redact_url(url_to_send)[:120]}"
+        )
         return False
     
     def get_torrent_info(self, torrent_hash: str) -> Optional[Dict[str, Any]]:
