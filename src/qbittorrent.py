@@ -11,11 +11,11 @@ import requests
 from typing import Dict, List, Optional, Any
 from urllib.parse import urlparse, parse_qs, urljoin
 
+from src.console import print_info, print_success, print_error, print_warning
+
 
 def _redact_url(url: str) -> str:
     return re.sub(r'(apikey|api_key|token|password)=[^&]+', r'\1=REDACTED', url, flags=re.IGNORECASE)
-
-from src.console import print_info, print_success, print_error, print_warning
 
 _CB_CLOSED = "CLOSED"
 _CB_OPEN = "OPEN"
