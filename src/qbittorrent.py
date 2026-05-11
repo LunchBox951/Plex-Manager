@@ -4,11 +4,16 @@ Handles authentication, torrent management, and metadata extraction.
 """
 
 import os
+import re
 import time
 import hashlib
 import requests
 from typing import Dict, List, Optional, Any
 from urllib.parse import urlparse, parse_qs, urljoin
+
+
+def _redact_url(url: str) -> str:
+    return re.sub(r'(apikey|api_key|token|password)=[^&]+', r'\1=REDACTED', url, flags=re.IGNORECASE)
 
 from src.console import print_info, print_success, print_error, print_warning
 
@@ -351,7 +356,7 @@ class QBittorrentClient:
         if magnet_link.startswith('http'):
             final_url, _ = QBittorrentClient._resolve_torrent_url(magnet_link)
             if final_url is None:
-                print_error(f"[ADD_MAGNET] Could not resolve URL to a usable torrent: {magnet_link[:120]}")
+                print_error(f"[ADD_MAGNET] Could not resolve URL to a usable torrent: {_redact_url(magnet_link)[:120]}")
                 return False
             if final_url.startswith('magnet:'):
                 url_to_send = final_url
@@ -374,14 +379,14 @@ class QBittorrentClient:
                 return True
             print_error(
                 f"[ADD_MAGNET] qBittorrent rejected torrent: HTTP {response.status_code} "
-                f"body={response.text[:500]!r} url={url_to_send[:120]}"
+                f"body={response.text[:500]!r} url={_redact_url(url_to_send)[:120]}"
             )
             return False
 
         if response is not None:
             print_error(
                 f"[ADD_MAGNET] Unexpected response: HTTP {response.status_code} "
-                f"body={response.text[:500]!r} url={url_to_send[:120]}"
+                f"body={response.text[:500]!r} url={_redact_url(url_to_send)[:120]}"
             )
         return False
     
