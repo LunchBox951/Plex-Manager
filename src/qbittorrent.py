@@ -8,7 +8,7 @@ import time
 import hashlib
 import requests
 from typing import Dict, List, Optional, Any
-from urllib.parse import urlparse, parse_qs
+from urllib.parse import urlparse, parse_qs, urljoin
 
 from src.console import print_info, print_success, print_error, print_warning
 
@@ -151,7 +151,8 @@ class QBittorrentClient:
                 timeout=10
             )
 
-            if response.status_code == 200 and response.text.strip() in ("Ok.", ""):
+            # qBit returns 204 (no body) on success in newer versions; 200+"Ok." in older versions
+            if response.ok and response.text.strip() in ("Ok.", ""):
                 self._authenticated = True
                 self._cb.record_success()
                 print_success(f"Successfully authenticated with qBittorrent at {self.base_url}")
@@ -159,7 +160,7 @@ class QBittorrentClient:
             else:
                 if self._cb.state == _CB_HALF_OPEN:
                     self._cb.record_failure()
-                print_error(f"Failed to authenticate with qBittorrent: {response.text}")
+                print_error(f"Failed to authenticate with qBittorrent: HTTP {response.status_code} - {response.text}")
                 return False
         except Exception as e:
             if self._cb.state == _CB_HALF_OPEN:
@@ -286,18 +287,24 @@ class QBittorrentClient:
             return None
 
         try:
-            response = requests.get(url, allow_redirects=True, timeout=15, stream=True)
-
-            # Check if final URL after redirects is a magnet link
-            if response.url.startswith('magnet:'):
-                return QBittorrentClient.extract_info_hash(response.url)
-
-            # Check response content for .torrent file (bencode starts with 'd')
-            content = response.content
-            if content and content[:1] == b'd':
-                info_hash = _extract_info_hash_from_torrent(content)
-                if info_hash:
-                    return info_hash
+            current_url = url
+            for _ in range(5):
+                response = requests.get(current_url, allow_redirects=False, timeout=15)
+                if response.is_redirect:
+                    location = response.headers.get('Location', '')
+                    if not location:
+                        break
+                    if location.startswith('magnet:'):
+                        return QBittorrentClient.extract_info_hash(location)
+                    current_url = urljoin(current_url, location)
+                    continue
+                if response.status_code == 200:
+                    content = response.content
+                    if content and content[:1] == b'd':
+                        info_hash = _extract_info_hash_from_torrent(content)
+                        if info_hash:
+                            return info_hash
+                break
 
         except Exception as e:
             print_warning(f"Failed to resolve info hash from URL: {e}")
