@@ -33,8 +33,10 @@ class CircuitBreaker:
         self.opened_at = None
 
     def record_failure(self):
+        if self.state == _CB_OPEN:
+            return
         self.failure_count += 1
-        if self.state == _CB_HALF_OPEN or (self.state == _CB_CLOSED and self.failure_count >= _CB_THRESHOLD):
+        if self.state == _CB_HALF_OPEN or self.failure_count >= _CB_THRESHOLD:
             self.state = _CB_OPEN
             self.opened_at = time.time()
             print_warning("qBittorrent unreachable — entering 5-minute cooldown")
@@ -45,6 +47,7 @@ class CircuitBreaker:
         if self.state == _CB_OPEN:
             if time.time() - self.opened_at >= _CB_COOLDOWN:
                 self.state = _CB_HALF_OPEN
+                self.failure_count = 0
                 return True
             return False
         return True
@@ -154,11 +157,9 @@ class QBittorrentClient:
                 print_success(f"Successfully authenticated with qBittorrent at {self.base_url}")
                 return True
             else:
-                self._cb.record_failure()
                 print_error(f"Failed to authenticate with qBittorrent: {response.text}")
                 return False
         except Exception as e:
-            self._cb.record_failure()
             print_error(f"Error during qBittorrent authentication: {e}")
             return False
     
@@ -186,6 +187,8 @@ class QBittorrentClient:
             return None
 
         self._ensure_authenticated()
+        if not self._cb.allow_request():
+            return None
 
         url = f"{self.base_url}{endpoint}"
 
