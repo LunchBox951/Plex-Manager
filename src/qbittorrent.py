@@ -157,9 +157,13 @@ class QBittorrentClient:
                 print_success(f"Successfully authenticated with qBittorrent at {self.base_url}")
                 return True
             else:
+                if self._cb.state == _CB_HALF_OPEN:
+                    self._cb.record_failure()
                 print_error(f"Failed to authenticate with qBittorrent: {response.text}")
                 return False
         except Exception as e:
+            if self._cb.state == _CB_HALF_OPEN:
+                self._cb.record_failure()
             print_error(f"Error during qBittorrent authentication: {e}")
             return False
     
