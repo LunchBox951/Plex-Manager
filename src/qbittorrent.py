@@ -110,7 +110,7 @@ class QBittorrentClient:
                 timeout=10
             )
             
-            if response.status_code == 200 and response.text == "Ok.":
+            if response.status_code == 200 and response.text.strip() in ("Ok.", ""):
                 self._authenticated = True
                 print_success(f"Successfully authenticated with qBittorrent at {self.base_url}")
                 return True
