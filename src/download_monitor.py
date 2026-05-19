@@ -1145,13 +1145,20 @@ async def _auto_request_season_pack(media_request, season_number: int) -> bool:
         qb.delete_torrent(info_hash, delete_files=True)
         return False
 
+    # IMPORTANT: metadata.name is parsed downstream by _process_tv_files_locked
+    # to extract the show title and year — using the torrent's display name
+    # (e.g. "Devil May Cry - Season 2") would build a path like
+    # /tv/Devil May Cry - Season 2/Season 2/... instead of
+    # /tv/Devil May Cry (2025)/Season 2/...
+    formatted_name = f"{media_request.title} ({media_request.year})" if media_request.year else media_request.title
     download = Download(
         torrent_hash=info_hash,
         magnet_link=best_torrent.torrent.magnet_link,
         status='downloading',
         media_type='tv',
         metadata_json=json.dumps({
-            'name': torrent_info.get('name'),
+            'name': formatted_name,
+            'torrent_name': torrent_info.get('name'),
             'size': torrent_info.get('size'),
             'num_files': len(files),
             'indexer': best_torrent.torrent.indexer,
@@ -1613,14 +1620,18 @@ async def nightly_episode_check():
                             
                             # Create Download record
                             timeout_date = datetime.utcnow() + timedelta(days=15)
-                            
+                            # metadata.name is parsed downstream to derive the show
+                            # folder; the torrent's display name (e.g. "Show S01E01")
+                            # would build /tv/Show S01E01/... instead of /tv/Show (Year)/
+                            formatted_name = f"{media_request.title} ({media_request.year})" if media_request.year else media_request.title
                             download = Download(
                                 torrent_hash=info_hash,
                                 magnet_link=best_torrent.torrent.magnet_link,
                                 status='downloading',
                                 media_type='tv',
                                 metadata_json=json.dumps({
-                                    'name': torrent_info.get('name'),
+                                    'name': formatted_name,
+                                    'torrent_name': torrent_info.get('name'),
                                     'size': torrent_info.get('size'),
                                     'num_files': len(files),
                                     'indexer': best_torrent.torrent.indexer,
