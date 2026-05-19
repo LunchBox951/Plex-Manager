@@ -186,33 +186,57 @@ def process_movie_files(download: Download, torrent_files: List[Dict]) -> Dict[s
             pass
 
 
+def _resolve_download_base(download: Download) -> str:
+    """
+    Resolve the directory containing this download's files.
+
+    Prefer the live `save_path` reported by qBittorrent — qBittorrent may have
+    placed the torrent elsewhere (e.g. when the scoring tier-3 metadata fetch
+    added the magnet first with no save_path, qBittorrent uses its own default
+    on subsequent re-adds). Fall back to the stored download_path or the env
+    default if qBittorrent can't tell us.
+    """
+    try:
+        qb = get_qbittorrent_client()
+        info = qb.get_torrent_info(download.torrent_hash)
+        if info:
+            save_path = info.get('save_path') or info.get('content_path')
+            if save_path:
+                # content_path includes the torrent name folder; save_path doesn't.
+                # _process_*_files iterates file_info['name'] which is a path relative
+                # to save_path, so prefer save_path here.
+                return info.get('save_path') or os.path.dirname(save_path)
+    except Exception as e:
+        print_warning(f"Could not read save_path from qBittorrent for {download.torrent_hash}: {e}")
+    return download.download_path or os.getenv('DOWNLOADS_PATH')
+
+
 def _process_movie_files_locked(download: Download, torrent_files: List[Dict]) -> Dict[str, bool]:
     """
     Internal method - process and copy movie files (assumes lock is held).
-    
+
     Args:
         download: Download record
         torrent_files: List of torrent files
-        
+
     Returns:
         Dictionary mapping filenames to success status
     """
     results = {}
-    
+
     # Parse metadata for movie title and year
     metadata = json.loads(download.metadata_json) if download.metadata_json else {}
     movie_name = metadata.get('name', 'Unknown Movie')
-    
+
     # Try to extract year from name (e.g., "Movie Title (2019)")
     import re
     year_match = re.search(r'\((\d{4})\)', movie_name)
     year = int(year_match.group(1)) if year_match else None
-    
+
     # Clean title (remove year from name)
     title = re.sub(r'\s*\(\d{4}\)', '', movie_name).strip()
-    
-    # Get download path from qBittorrent info
-    download_base = download.download_path or os.getenv('DOWNLOADS_PATH')
+
+    download_base = _resolve_download_base(download)
     
     # Process each file
     video_copied = False
@@ -303,19 +327,21 @@ def _process_tv_files_locked(download: Download, torrent_files: List[Dict]) -> D
     
     # Clean title
     title = re.sub(r'\s*\(\d{4}\)', '', show_name).strip()
-    
-    # Get download path
-    download_base = download.download_path or os.getenv('DOWNLOADS_PATH')
-    
+
+    download_base = _resolve_download_base(download)
+    print_info(f"[TV] Processing files from {download_base!r}")
+
     # Track copied episodes for subtitle matching
     copied_episodes = {}  # filename -> dest_path
-    
+    missing_files = []
+
     # Process video files first
     for file_info in torrent_files:
         filename = file_info.get('name', '')
         file_path = os.path.join(download_base, filename)
-        
+
         if not os.path.exists(file_path):
+            missing_files.append(file_path)
             continue
         
         if is_video_file(filename):
@@ -378,7 +404,21 @@ def _process_tv_files_locked(download: Download, torrent_files: List[Dict]) -> D
             if not matched:
                 print_warning(f"Could not match subtitle to episode: {filename}")
                 results[filename] = False
-    
+
+    if missing_files:
+        # If every file is missing, the downstream "all succeeded" path would
+        # silently mark the download as seeding with nothing copied. Surface that.
+        print_error(
+            f"[TV] {len(missing_files)}/{len(torrent_files)} files were not found "
+            f"under {download_base!r} (e.g. {missing_files[0]!r}). "
+            f"download_path={download.download_path!r} env DOWNLOADS_PATH={os.getenv('DOWNLOADS_PATH')!r}"
+        )
+        if not results:
+            # Mark every torrent file as failed so on_download_complete can flip
+            # the download to 'failed' instead of 'seeding'.
+            for file_info in torrent_files:
+                results[file_info.get('name', '')] = False
+
     return results
 
 
