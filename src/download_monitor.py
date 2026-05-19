@@ -1089,16 +1089,13 @@ async def _auto_request_season_pack(media_request, season_number: int) -> bool:
         print_error(f"qBittorrent rejected season-pack magnet")
         return False
 
-    time.sleep(2)
-    torrent_info = qb.get_torrent_info(info_hash)
-    if not torrent_info:
-        print_error(f"Failed to retrieve season-pack torrent info")
-        qb.delete_torrent(info_hash, delete_files=True)
-        return False
-
-    files = qb.get_torrent_files(info_hash)
-    if not files:
-        print_error(f"No files found in season-pack torrent")
+    # Use the progressive-retry helper so larger season packs have time to
+    # pull metadata (the previous 2 s sleep was too short and led to
+    # "No files found in season-pack torrent" on a known-good pack).
+    from src.downloads import await_torrent_connection
+    connection_success, torrent_info, files = await await_torrent_connection(qb, info_hash)
+    if not connection_success or not torrent_info or not files:
+        print_error(f"Failed to fetch metadata for season-pack torrent after retries")
         qb.delete_torrent(info_hash, delete_files=True)
         return False
 
