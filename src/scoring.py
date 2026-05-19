@@ -566,6 +566,19 @@ def rank_torrents(
                 reason=reason
             ))
 
+    # When the caller requests a full season (season_number set, no episode
+    # filter), drop single-episode torrents so they can't out-score a real pack
+    # on seeders/size alone. Fall back to the unfiltered list only if there
+    # are no season packs in the results at all.
+    if season_number is not None and requested_episodes is None and scored_torrents:
+        pack_only = [s for s in scored_torrents if s.is_season_pack]
+        if pack_only:
+            dropped = len(scored_torrents) - len(pack_only)
+            info(f"[SCORING] Full-season requested: kept {len(pack_only)} season packs, dropped {dropped} non-pack torrents")
+            scored_torrents = pack_only
+        else:
+            warning("[SCORING] Full-season requested but no season packs found — falling back to all results")
+
     # Sort by final score descending
     scored_torrents.sort(key=lambda x: x.final_score, reverse=True)
 
