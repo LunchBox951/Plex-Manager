@@ -1028,15 +1028,133 @@ async def cleanup_expired_cache():
         print_error(f"Error cleaning up cache: {e}")
 
 
+async def _auto_request_season_pack(media_request, season_number: int) -> bool:
+    """
+    Auto-request a full-season download for a newly-discovered season.
+
+    Mirrors the per-episode auto-request flow in nightly_episode_check but
+    targets a full season pack (no episode filter).
+
+    Returns True if a download was added, False otherwise.
+    """
+    from src.prowlarr import get_prowlarr_client, CATEGORY_TV
+    from src.scoring import rank_torrents, select_best_torrent
+    from src.qbittorrent import get_qbittorrent_client, QBittorrentClient
+    from src.torrent_validator import validate_torrent_files
+    import time
+
+    query = f"{media_request.title} S{season_number:02d}"
+    print_info(f"Searching for new season pack: {query}")
+
+    prowlarr = get_prowlarr_client()
+    torrents = prowlarr.search(query, CATEGORY_TV)
+    if not torrents:
+        print_info(f"No torrents found yet for {media_request.title} S{season_number:02d}")
+        return False
+
+    failed_ids = download_store.get_ids_by_index_multi('status', ['failed', 'partial_failed'])
+    failed_downloads = [download_store.load(id) for id in failed_ids if download_store.load(id)]
+    failed_hashes = {d.torrent_hash.lower() for d in failed_downloads}
+
+    qb = get_qbittorrent_client()
+    scored_torrents = rank_torrents(
+        torrents=torrents,
+        failed_hashes=failed_hashes,
+        tmdb_id=media_request.tmdb_id,
+        season_number=season_number,
+        requested_episodes=None,
+        qb_client=qb,
+    )
+    if not scored_torrents:
+        print_info(f"No suitable season-pack torrents after filtering")
+        return False
+
+    best_torrent = select_best_torrent(scored_torrents)
+    if not best_torrent:
+        print_info(f"No season-pack torrents meet quality requirements")
+        return False
+
+    info_hash = QBittorrentClient.resolve_info_hash(best_torrent.torrent.magnet_link)
+    if not info_hash:
+        print_error(f"Could not extract info hash for season pack")
+        return False
+
+    existing_download = download_store.find_by_index('torrent_hash', info_hash)
+    if existing_download:
+        print_info(f"Season-pack torrent already exists as download {existing_download.id}")
+        return False
+
+    save_path = os.getenv('DOWNLOADS_PATH', 'C:\\downloads')
+    if not qb.add_magnet(magnet_link=best_torrent.torrent.magnet_link, category='tv', save_path=save_path):
+        print_error(f"qBittorrent rejected season-pack magnet")
+        return False
+
+    time.sleep(2)
+    torrent_info = qb.get_torrent_info(info_hash)
+    if not torrent_info:
+        print_error(f"Failed to retrieve season-pack torrent info")
+        qb.delete_torrent(info_hash, delete_files=True)
+        return False
+
+    files = qb.get_torrent_files(info_hash)
+    if not files:
+        print_error(f"No files found in season-pack torrent")
+        qb.delete_torrent(info_hash, delete_files=True)
+        return False
+
+    validation = validate_torrent_files(files)
+    if not validation.valid:
+        print_error(f"Season-pack torrent validation failed: {validation.reason}")
+        qb.delete_torrent(info_hash, delete_files=True)
+        return False
+
+    download = Download(
+        torrent_hash=info_hash,
+        magnet_link=best_torrent.torrent.magnet_link,
+        status='downloading',
+        media_type='tv',
+        metadata_json=json.dumps({
+            'name': torrent_info.get('name'),
+            'size': torrent_info.get('size'),
+            'num_files': len(files),
+            'indexer': best_torrent.torrent.indexer,
+            'score': best_torrent.final_score,
+            'auto_requested': True,
+            'auto_reason': 'new_season_discovered',
+        }),
+        will_timeout_at=datetime.utcnow() + timedelta(days=15),
+        tmdb_id=media_request.tmdb_id,
+        year=media_request.year,
+        season=season_number,
+        episodes=None,
+        media_request_id=media_request.id,
+        retry_count=0,
+        torrent_attempt=1,
+    )
+    download = download_store.save(download)
+
+    season_req = SeasonRequest(
+        download_id=download.id,
+        season_number=season_number,
+        episode_numbers=None,
+        status='pending',
+    )
+    season_request_store.save(season_req)
+
+    print_success(f"✓ Auto-requested new season pack: {media_request.title} S{season_number:02d}")
+    return True
+
+
 async def nightly_episode_check():
     """
     Nightly task running at 2 AM to:
     1. Retry failed/pending downloads (with retry_count < 5)
-    2. Search for newly released episodes (aired yesterday) on tracked shows
-    
+    2. Discover newly-added seasons on tracked shows and request season packs
+    3. Search for newly released episodes (aired yesterday) on tracked shows
+
     This consolidates retry logic and new episode detection in one job.
     """
-    from src.TMDB import season_service, safe_tmdb_call
+    from src.TMDB import season_service, safe_tmdb_call, get_tv_details
     from src.prowlarr import get_prowlarr_client, CATEGORY_TV, CATEGORY_MOVIES
     from src.scoring import rank_torrents, select_best_torrent
     from src.qbittorrent import get_qbittorrent_client, QBittorrentClient
@@ -1259,13 +1377,60 @@ async def nightly_episode_check():
         for media_request in tracked_requests:
             try:
                 print_info(f"Checking {media_request.title} for new episodes...")
-                
+
+                # Discover newly-added seasons from TMDB and request them.
+                # Without this, shows requested before a later season existed never
+                # pick up that season (e.g. Devil May Cry S02 after S01 was requested).
+                try:
+                    tv_details = get_tv_details(media_request.tmdb_id)
+                except Exception as tmdb_err:
+                    print_warning(f"Could not fetch TMDB details for {media_request.title}: {tmdb_err}")
+                    tv_details = None
+
+                if tv_details:
+                    # Collect season numbers we've already requested for this show
+                    existing_downloads = download_store.list_by_index('media_request_id', media_request.id)
+                    requested_seasons = set()
+                    for dl in existing_downloads:
+                        if dl.season is not None:
+                            requested_seasons.add(dl.season)
+                        for sr in season_request_store.list_by_index('download_id', dl.id):
+                            requested_seasons.add(sr.season_number)
+
+                    for season_meta in tv_details.get('seasons', []) or []:
+                        season_num = season_meta.get('season_number')
+                        if season_num is None or season_num <= 0:
+                            continue  # Skip specials (season 0) and malformed entries
+                        if season_num in requested_seasons:
+                            continue
+
+                        air_date_str = season_meta.get('air_date')
+                        if not air_date_str:
+                            continue  # Future/unscheduled season
+                        try:
+                            season_air_date = datetime.strptime(air_date_str, '%Y-%m-%d').date()
+                        except (ValueError, TypeError):
+                            continue
+                        if season_air_date > today:
+                            continue  # Not yet aired
+
+                        print_info(
+                            f"Discovered new season for {media_request.title}: "
+                            f"S{season_num:02d} (aired {season_air_date})"
+                        )
+                        try:
+                            await _auto_request_season_pack(media_request, season_num)
+                        except Exception as auto_err:
+                            print_error(
+                                f"Failed to auto-request {media_request.title} S{season_num:02d}: {auto_err}"
+                            )
+
                 # Get ongoing seasons for this show
                 ongoing_seasons = [
                     s for s in tmdb_season_cache_store.list_by_index('tmdb_id', media_request.tmdb_id)
                     if s.season_status == 'ongoing'
                 ]
-                
+
                 if not ongoing_seasons:
                     print_info(f"No ongoing seasons found for {media_request.title}")
                     continue
